@@ -1,0 +1,1527 @@
+diff --git a/.gitignore b/.gitignore
+index 09a0c77..259cd1f 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -6,3 +6,4 @@ __pycache__/
+ .coverage
+ build/
+ dist/
++data/generated/*.json
+diff --git a/README.md b/README.md
+index e718416..55019e1 100644
+--- a/README.md
++++ b/README.md
+@@ -35,6 +35,20 @@ Display the package version:
+ python -m ebolalens --version
+ ```
+ 
++List and check official sources:
++
++```bash
++python -m ebolalens sources list
++python -m ebolalens sources check --offline
++python -m ebolalens sources check --live
++```
++
++The offline command is deterministic and uses small synthetic fixtures. It writes `data/generated/offline_source_manifest.json` by default. The live command performs bounded, sequential HTTP checks and records per-source failures without discarding successful results; its default state is `data/generated/source_manifest.json`. Use `--manifest PATH` to override either default. Keeping these paths separate prevents synthetic fixture state from entering operational history.
++
++Maintained registrations live in `data/sources.json`; generated manifests are written atomically and are not committed. Discovery finds candidate official URLs, registration records reviewed URLs, and checking detects byte-level versions. Candidate history is cumulative: manifests record first and last observation, current-feed presence, and newly seen URLs even when older candidates disappear from a later successful feed. Discovery failures preserve the last successful candidate state.
++
++Epidemiological extraction is a separate future stage. Current automatic discovery is limited to the confirmed INSP SitRep RSS feed; it is not a claim of complete coverage. Candidates are never fetched or registered automatically and require human review. A successful HTTP check confirms availability and payload identity only—it does not validate epidemiological contents.
++
+ See the [project charter](docs/project_charter.md) for the intended scope and operating principles.
+ 
+ The licensing policy will be decided before the first public release.
+diff --git a/data/README.md b/data/README.md
+index 042c407..d4d9c67 100644
+--- a/data/README.md
++++ b/data/README.md
+@@ -1,3 +1,11 @@
+ # Data
+ 
+-This directory will hold project data and related provenance records. No outbreak reports or extracted data are included at this stage.
++`sources.json` is the maintained registry of official source pages, confirmed discovery endpoints, and known documents. Small files under `fixtures/` are synthetic, clearly labeled inputs for deterministic offline checks; they are not downloaded reports.
++
++Source discovery finds candidate URLs. Manual registration records reviewed candidates and explicit metadata. Checking records HTTP outcomes and identifies payloads by SHA-256. Epidemiological extraction is not implemented and remains a separate future step. In particular, a successful HTTP check does not validate epidemiological contents.
++
++Checks atomically write generated state. Live checks default to `generated/source_manifest.json`; offline fixture checks default to the isolated `generated/offline_source_manifest.json`. Both are ignored by Git because retrieval state and timestamps are run-specific. An explicit `--manifest PATH` overrides the relevant default.
++
++The manifest's cumulative `candidates` registry identifies candidates by exact URL and retains their publisher, discovery endpoint, first-seen and last-seen timestamps, and current-feed presence. A successful later feed can mark an older candidate absent without deleting it. A failed retrieval or parse preserves the last successful presence state. Newly observed candidate URLs are printed for human review; they are not automatically downloaded or registered.
++
++Current discovery is limited to the confirmed official INSP SitRep RSS feed and may be incomplete. If the feed misses a document, add its official URL and explicitly known metadata to `sources.json`; never guess a filename or replace prior history. Candidate status and successful HTTP retrieval do not validate epidemiological content.
+diff --git a/src/ebolalens/__main__.py b/src/ebolalens/__main__.py
+index 3bb4eeb..15a6c27 100644
+--- a/src/ebolalens/__main__.py
++++ b/src/ebolalens/__main__.py
+@@ -1,11 +1,63 @@
+ """Command-line entry point for EbolaLens."""
+ 
+ import argparse
++from datetime import UTC, datetime
++from pathlib import Path
+ 
+ from ebolalens import __version__
++from ebolalens.sources import (
++    ConfigurationError,
++    OFFLINE_TIMESTAMP,
++    check_registry,
++    live_transport,
++    load_config,
++    load_manifest,
++    offline_transport,
++    summarize,
++    write_manifest_atomic,
++)
+ 
++DEFAULT_CONFIG = Path("data/sources.json")
++DEFAULT_LIVE_MANIFEST = Path("data/generated/source_manifest.json")
++DEFAULT_OFFLINE_MANIFEST = Path("data/generated/offline_source_manifest.json")
+ 
+-def main() -> None:
++
++def _manifest_path(explicit_path: Path | None, live: bool) -> Path:
++    """Select isolated mode-specific state unless the user overrides it."""
++    if explicit_path is not None:
++        return explicit_path
++    return DEFAULT_LIVE_MANIFEST if live else DEFAULT_OFFLINE_MANIFEST
++
++
++def _list_sources(config_path: Path) -> int:
++    config = load_config(config_path)
++    for heading, group in (
++        ("Source pages", "source_pages"),
++        ("Discovery endpoints", "discovery_endpoints"),
++        ("Known documents", "documents"),
++    ):
++        print(f"{heading}:")
++        for entry in config[group]:
++            print(f"  {entry['id']} [{entry['publisher']}]: {entry['canonical_url']}")
++    return 0
++
++
++def _check_sources(config_path: Path, manifest_path: Path, live: bool) -> int:
++    config = load_config(config_path)
++    prior = load_manifest(manifest_path)
++    if live:
++        fetch = live_transport
++        checked_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
++    else:
++        fetch = offline_transport(config, config_path)
++        checked_at = OFFLINE_TIMESTAMP
++    manifest = check_registry(config, prior, fetch, checked_at)
++    write_manifest_atomic(manifest_path, manifest)
++    print(summarize(manifest))
++    return 0
++
++
++def main() -> int:
+     """Run the EbolaLens command-line interface."""
+     parser = argparse.ArgumentParser(prog="ebolalens")
+     parser.add_argument(
+@@ -13,8 +65,35 @@ def main() -> None:
+         action="version",
+         version=f"%(prog)s {__version__}",
+     )
+-    parser.parse_args()
++    subparsers = parser.add_subparsers(dest="command")
++    sources_parser = subparsers.add_parser("sources", help="manage official sources")
++    sources_subparsers = sources_parser.add_subparsers(dest="sources_command", required=True)
++
++    list_parser = sources_subparsers.add_parser("list", help="list registered sources")
++    list_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
++
++    check_parser = sources_subparsers.add_parser("check", help="check registered sources")
++    mode = check_parser.add_mutually_exclusive_group(required=True)
++    mode.add_argument("--offline", action="store_true", help="use committed fixtures")
++    mode.add_argument("--live", action="store_true", help="retrieve registered live URLs")
++    check_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
++    check_parser.add_argument("--manifest", type=Path)
++
++    args = parser.parse_args()
++    try:
++        if args.command == "sources" and args.sources_command == "list":
++            return _list_sources(args.config)
++        if args.command == "sources" and args.sources_command == "check":
++            return _check_sources(
++                args.config,
++                _manifest_path(args.manifest, args.live),
++                args.live,
++            )
++    except (ConfigurationError, OSError) as exc:
++        parser.error(str(exc))
++    parser.print_help()
++    return 0
+ 
+ 
+ if __name__ == "__main__":
+-    main()
++    raise SystemExit(main())
+diff --git a/data/fixtures/insp-home.html b/data/fixtures/insp-home.html
+new file mode 100644
+index 0000000..981a229
+--- /dev/null
++++ b/data/fixtures/insp-home.html
+@@ -0,0 +1 @@
++<!doctype html><title>INSP offline source-page fixture</title>
+diff --git a/data/fixtures/insp-seed-1.pdf b/data/fixtures/insp-seed-1.pdf
+new file mode 100644
+index 0000000..3f524aa
+--- /dev/null
++++ b/data/fixtures/insp-seed-1.pdf
+@@ -0,0 +1 @@
++Synthetic offline fixture for INSP seed document 1. This is not a real PDF.
+diff --git a/data/fixtures/insp-seed-55.pdf b/data/fixtures/insp-seed-55.pdf
+new file mode 100644
+index 0000000..2006b13
+--- /dev/null
++++ b/data/fixtures/insp-seed-55.pdf
+@@ -0,0 +1 @@
++Synthetic offline fixture for INSP seed document 55. This is not a real PDF.
+diff --git a/data/fixtures/insp-seed-68.pdf b/data/fixtures/insp-seed-68.pdf
+new file mode 100644
+index 0000000..51f2078
+--- /dev/null
++++ b/data/fixtures/insp-seed-68.pdf
+@@ -0,0 +1 @@
++Synthetic offline fixture for INSP seed document 68. This is not a real PDF.
+diff --git a/data/fixtures/insp-sitrep-feed.xml b/data/fixtures/insp-sitrep-feed.xml
+new file mode 100644
+index 0000000..6fdeba2
+--- /dev/null
++++ b/data/fixtures/insp-sitrep-feed.xml
+@@ -0,0 +1,4 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<rss version="2.0"><channel><title>INSP SitRep offline fixture</title>
++<item><title>Fixture entry</title><link>https://insp.cd/sitrep-fixture/</link></item>
++</channel></rss>
+diff --git a/data/fixtures/who-don.html b/data/fixtures/who-don.html
+new file mode 100644
+index 0000000..e6d0c3d
+--- /dev/null
++++ b/data/fixtures/who-don.html
+@@ -0,0 +1 @@
++<!doctype html><title>WHO Disease Outbreak News offline fixture</title>
+diff --git a/data/fixtures/who-outbreak.html b/data/fixtures/who-outbreak.html
+new file mode 100644
+index 0000000..fac8893
+--- /dev/null
++++ b/data/fixtures/who-outbreak.html
+@@ -0,0 +1 @@
++<!doctype html><title>WHO outbreak page offline fixture</title>
+diff --git a/data/sources.json b/data/sources.json
+new file mode 100644
+index 0000000..0d61d84
+--- /dev/null
++++ b/data/sources.json
+@@ -0,0 +1,84 @@
++{
++  "schema_version": 1,
++  "source_pages": [
++    {
++      "id": "insp-home",
++      "publisher": "INSP",
++      "source_type": "source_page",
++      "canonical_url": "https://insp.cd/",
++      "discovery_method": "manual_registry",
++      "offline_fixture": "fixtures/insp-home.html",
++      "offline_media_type": "text/html; charset=UTF-8"
++    },
++    {
++      "id": "who-outbreak-page",
++      "publisher": "WHO",
++      "source_type": "source_page",
++      "canonical_url": "https://www.who.int/emergencies/situations/ebola-outbreak---drc-2026",
++      "discovery_method": "manual_registry",
++      "offline_fixture": "fixtures/who-outbreak.html",
++      "offline_media_type": "text/html; charset=UTF-8"
++    },
++    {
++      "id": "who-don-index",
++      "publisher": "WHO",
++      "source_type": "source_page",
++      "canonical_url": "https://www.who.int/emergencies/disease-outbreak-news",
++      "discovery_method": "manual_registry",
++      "offline_fixture": "fixtures/who-don.html",
++      "offline_media_type": "text/html; charset=UTF-8"
++    }
++  ],
++  "discovery_endpoints": [
++    {
++      "id": "insp-sitrep-feed",
++      "publisher": "INSP",
++      "source_type": "rss_feed",
++      "canonical_url": "https://insp.cd/category/sitrep/feed/",
++      "discovery_method": "confirmed_official_rss",
++      "offline_fixture": "fixtures/insp-sitrep-feed.xml",
++      "offline_media_type": "application/rss+xml; charset=UTF-8"
++    }
++  ],
++  "documents": [
++    {
++      "id": "insp-seed-draft-mve-ituri-actuelb-1",
++      "publisher": "INSP",
++      "source_type": "official_report",
++      "canonical_url": "https://insp.cd/wp-content/uploads/2026/05/Draft-MVE-Ituri-ActuelB-1.pdf",
++      "aliases": [],
++      "report_number": null,
++      "reporting_date": null,
++      "publication_date": null,
++      "discovery_method": "confirmed_seed_url",
++      "offline_fixture": "fixtures/insp-seed-1.pdf",
++      "offline_media_type": "application/pdf"
++    },
++    {
++      "id": "insp-seed-sitrep-055",
++      "publisher": "INSP",
++      "source_type": "official_report",
++      "canonical_url": "https://insp.cd/wp-content/uploads/2026/07/Draft_SitRep_MVE_RDC_N%C2%B0055_08_07_2026.pdf",
++      "aliases": [],
++      "report_number": null,
++      "reporting_date": null,
++      "publication_date": null,
++      "discovery_method": "confirmed_seed_url",
++      "offline_fixture": "fixtures/insp-seed-55.pdf",
++      "offline_media_type": "application/pdf"
++    },
++    {
++      "id": "insp-seed-sitrep-068",
++      "publisher": "INSP",
++      "source_type": "official_report",
++      "canonical_url": "https://insp.cd/wp-content/uploads/2026/07/SitRep_MVE_RDC_N%C2%B0_68_21-07-2026.pdf",
++      "aliases": [],
++      "report_number": null,
++      "reporting_date": null,
++      "publication_date": null,
++      "discovery_method": "confirmed_seed_url",
++      "offline_fixture": "fixtures/insp-seed-68.pdf",
++      "offline_media_type": "application/pdf"
++    }
++  ]
++}
+diff --git a/docs/source_investigation.md b/docs/source_investigation.md
+new file mode 100644
+index 0000000..1c2c8c8
+--- /dev/null
++++ b/docs/source_investigation.md
+@@ -0,0 +1,32 @@
++# INSP source-discovery investigation
++
++## Investigation performed
++
++On 2026-09-06, EbolaLens made a small number of sequential, read-only requests to `insp.cd` with a descriptive user agent, 5-second connection and 15-second total timeouts, redirects enabled, and response-size limits. No access control, rate limit, robots rule, or anti-bot measure was bypassed.
++
++The following official mechanisms were tested:
++
++- `https://insp.cd/` returned HTTP 200 and linked to the SitRep category, individual SitRep posts, and the WordPress REST API.
++- `https://insp.cd/wp-json/` returned HTTP 200 with WordPress REST metadata.
++- `https://insp.cd/wp-json/wp/v2/search?search=sitrep&per_page=10` returned HTTP 200 and ten SitRep post results. Search terms and ranking make this unsuitable as the sole durable index.
++- `https://insp.cd/category/sitrep/feed/` returned HTTP 200 as RSS. Its items contained official post URLs and embedded PDF metadata. This is the only mechanism enabled for automatic candidate discovery in stage 01.
++- `https://insp.cd/wp-sitemap.xml` returned HTTP 404.
++- `https://insp.cd/robots.txt` returned HTTP 200, allowed general access, and declared `https://insp.cd/sitemap.xml`; the declared sitemap also returned HTTP 404.
++
++The investigation also observed relevant official homepage links including the SitRep category and individual SitRep pages. It did not use general web search as a production discovery mechanism.
++
++## Evidence and implementation boundary
++
++The official RSS feed provides a simple, bounded, machine-readable index and exposes candidate post and embedded PDF URLs. The live checker therefore reads that feed and records discovered candidate URLs. It does not automatically assert document identity or infer report metadata from filenames. WordPress REST remains documented evidence but is not queried automatically because the RSS feed is simpler and sufficient for a narrow first implementation.
++
++Generated state preserves a cumulative registry keyed by each exact discovered URL. It records first and last observation, the originating publisher and endpoint, and whether the URL appeared in the latest successful response. New URLs are highlighted for review. URLs absent from a later successful feed remain in history, while retrieval or XML failures leave the previous presence state intact and visibly report the endpoint error. Candidates are not automatically fetched or registered.
++
++Offline fixture state and live operational state use separate default manifests: `data/generated/offline_source_manifest.json` and `data/generated/source_manifest.json`, respectively. This prevents synthetic payload hashes and candidate observations from contaminating live history. Either path can be explicitly overridden for controlled testing or operations.
++
++RSS is not guaranteed to contain complete history, and its continued availability is outside this project's control. The sitemap endpoints tested during this run were unavailable. WHO pages are registered and checked, but stage 01 deliberately includes no broad WHO scraper.
++
++## Manual fallback
++
++When an official document is absent from the feed, add a record to `data/sources.json` using the exact official URL. Assign a stable internal ID, retain every observed alias, and enter report number, reporting date, or publication date only when explicitly known; otherwise use `null`. Never construct speculative sequential URLs or use a filename as identity. Run the offline check first, then a live check when network access is safe. Changed bytes become a new SHA-256 version, while identical bytes at another URL extend the payload's observed URL list.
++
++A successful retrieval or candidate observation establishes availability or URL discovery only. It does not validate or interpret epidemiological contents.
+diff --git a/prompts/prompt_01_source_registry.md b/prompts/prompt_01_source_registry.md
+new file mode 100644
+index 0000000..21befff
+--- /dev/null
++++ b/prompts/prompt_01_source_registry.md
+@@ -0,0 +1,169 @@
++# Prompt 01 — official-source registry and change detection
++
++You are working in the public Git repository **EbolaLens**. Stage 00 is committed and the worktree must be clean before you begin.
++
++EbolaLens is a lightweight, reproducible operational tool for processing official reports about the ongoing outbreak of Ebola disease caused by Bundibugyo virus. It must run on an ordinary laptop without HPC, paid cloud services, a database server, or a heavy frontend.
++
++Project motto:
++
++> Public quickly. Correct carefully. Revise transparently.
++
++## Goal of this stage
++
++Implement the smallest reliable foundation for:
++
++1. registering official sources and known official documents;
++2. checking registered URLs safely;
++3. detecting a previously unseen document version or a changed payload at an existing URL;
++4. producing a deterministic, machine-readable manifest and a concise human-readable report.
++
++Do **not** parse epidemiological tables yet. Do not implement forecasting, PDF text extraction, a dashboard, GitHub Pages, or GitHub Actions.
++
++## Important source finding
++
++INSP/COUSP PDF filenames are not governed by a stable naming convention. Observed official filenames contain inconsistent variants such as `Draft`, `Final`, `Revised`, different encodings of `N°`, and different date formats. Therefore:
++
++- never discover reports by guessing sequential filenames or constructing speculative URLs;
++- never treat a filename as the report identity;
++- distinguish the canonical source URL, final resolved URL, content hash, report number when known, reporting date when known, publication date when known, and retrieval time;
++- treat identical content reached through different URLs as the same payload while retaining all observed URLs;
++- treat changed bytes at an existing URL as a new document version, never as an overwrite of history.
++
++## Official starting points
++
++Record these official pages as source-page candidates:
++
++- INSP: `https://insp.cd/`
++- WHO outbreak page: `https://www.who.int/emergencies/situations/ebola-outbreak---drc-2026`
++- WHO Disease Outbreak News: `https://www.who.int/emergencies/disease-outbreak-news`
++
++Use at least these confirmed official INSP documents as reproducible fixtures or seed records:
++
++- `https://insp.cd/wp-content/uploads/2026/05/Draft-MVE-Ituri-ActuelB-1.pdf`
++- `https://insp.cd/wp-content/uploads/2026/07/Draft_SitRep_MVE_RDC_N%C2%B0055_08_07_2026.pdf`
++- `https://insp.cd/wp-content/uploads/2026/07/SitRep_MVE_RDC_N%C2%B0_68_21-07-2026.pdf`
++
++Do not infer that these are the newest documents.
++
++## Discovery investigation
++
++Before implementing live discovery, perform a short, polite, read-only investigation of official INSP mechanisms, including where reachable:
++
++- relevant links on official INSP pages;
++- WordPress REST endpoints exposed by `insp.cd`;
++- official sitemaps;
++- official feeds.
++
++Use explicit timeouts, a descriptive EbolaLens user agent, few requests, and no concurrency against INSP. Do not bypass access controls, robots restrictions, rate limits, or anti-bot measures. Do not use general web-search results as the production discovery mechanism.
++
++Document exactly which official discovery mechanisms were tested, which worked, and which did not. Implement automatic discovery only for mechanisms confirmed during this run. If no reliable official index is available, say so clearly and implement a seed/manual-registration workflow plus URL change detection. A truthful partial capability is preferable to fabricated automation.
++
++WHO monitoring may be represented in the registry at this stage, but do not build a broad WHO content scraper unless it is both simple and testable.
++
++## Data model
++
++Use a simple, documented JSON representation based only on Python's standard library unless a new dependency is clearly justified. Include fields sufficient to represent:
++
++- stable internal document/version identifiers;
++- publisher and source type;
++- canonical and resolved URLs;
++- all known aliases;
++- retrieval timestamp in UTC;
++- HTTP status;
++- media type;
++- byte length;
++- SHA-256 digest;
++- ETag and Last-Modified when supplied;
++- report number and dates when explicitly known, otherwise `null`;
++- discovery method;
++- first-seen and last-checked timestamps;
++- status and error information without silently dropping failed checks.
++
++Separate maintained configuration from generated state. Generated output must be deterministic apart from explicitly documented retrieval timestamps. Use atomic file replacement so an interrupted run cannot corrupt the manifest.
++
++## Command-line interface
++
++Add a minimal CLI while preserving:
++
++```bash
++python -m ebolalens --version
++```
++
++Provide clear commands equivalent to:
++
++```bash
++python -m ebolalens sources list
++python -m ebolalens sources check --offline
++python -m ebolalens sources check --live
++```
++
++Exact internal organization is your decision, but avoid a framework and premature abstraction.
++
++- `list` displays registered source pages and known documents.
++- `check --offline` runs deterministically against committed fixtures and requires no network.
++- `check --live` performs polite checks of registered live URLs and any confirmed official discovery endpoint.
++
++Exit nonzero for an unusable configuration or internal processing failure. Individual unreachable sources should be recorded and reported without discarding successful results from other sources.
++
++## Storage and safety
++
++- Do not commit downloaded live PDFs in this stage.
++- Commit only small, clearly identified test fixtures. Prefer minimal synthetic byte fixtures where real PDFs are unnecessary.
++- Never log tokens, cookies, credentials, complete request headers, or environment contents.
++- Do not execute active content from retrieved pages.
++- Apply bounded download sizes and reject unexpected oversized payloads safely.
++- Use connection and read timeouts.
++- Use conditional requests when ETag or Last-Modified is available, but SHA-256 remains the content identity.
++- Preserve provenance for every result.
++
++## Tests
++
++Add deterministic tests, with no network access, covering at least:
++
++1. configuration loading and validation;
++2. unchanged content at the same URL;
++3. changed bytes at the same URL creating a new version;
++4. identical bytes reached through a second URL creating an alias rather than duplicate content;
++5. HTTP or transport failure being recorded without corrupting prior state;
++6. atomic manifest writing;
++7. offline CLI behavior and exit status;
++8. the existing version command.
++
++Mock or fake transport at a narrow boundary. Tests must not call INSP or WHO.
++
++## Documentation
++
++Update `README.md` and `data/README.md` with:
++
++- the new commands;
++- the distinction between discovery, registration, checking, and epidemiological extraction;
++- limitations of the current discovery mechanism;
++- where maintained configuration and generated manifests live;
++- a clear statement that a successful HTTP check does not validate epidemiological contents.
++
++Add a short technical note under `docs/` describing the source investigation, evidence, limitations, and fallback manual-registration procedure. Do not include unverified epidemiological numbers.
++
++## Verification
++
++After implementation:
++
++1. install the project in the existing `.venv` in editable development mode;
++2. run the complete test suite;
++3. run the version command;
++4. run all offline source commands;
++5. run the live check only if it is safe and reachable; a network failure must be reported honestly, not hidden;
++6. run syntax/compile checks appropriate to the implementation;
++7. inspect all changes for secrets and accidental downloaded files;
++8. run `git diff --check`;
++9. show `git status --short`.
++
++Do not run `git add`, `git commit`, `git push`, create releases, or modify GitHub settings.
++
++## Control artifacts
++
++Create:
++
++- `stage01_sources_report.log` — concise summary of investigation, implementation, exact commands, test results, live-check outcome, limitations, and assumptions;
++- `stage01_sources_changes.diff` — readable unified diff of all changes and new files, excluding the diff file itself to avoid recursion.
++
++Do not modify the Stage 00 report or diff. At the end, print a concise summary, exact test result, live-check status, limitations, and `git status --short`.
+diff --git a/prompts/prompt_01a_manifest_isolation_and_candidate_history.md b/prompts/prompt_01a_manifest_isolation_and_candidate_history.md
+new file mode 100644
+index 0000000..ae1da77
+--- /dev/null
++++ b/prompts/prompt_01a_manifest_isolation_and_candidate_history.md
+@@ -0,0 +1,81 @@
++# Prompt 01a — isolate offline state and preserve discovery history
++
++You are continuing Stage 01 of EbolaLens. Do not redesign the source subsystem and do not add new product features. Correct two operational defects identified during review.
++
++Read the existing Stage 01 implementation, tests, documentation, report, and prompt before editing.
++
++## Defect 1: offline/live manifest contamination
++
++The `--offline` and `--live` modes currently default to the same generated manifest path. An offline run writes synthetic fixture payloads into the same state later used by a live run. This can contaminate real operational history.
++
++Requirements:
++
++- live mode must continue to default to `data/generated/source_manifest.json`;
++- offline mode must default to a distinct path such as `data/generated/offline_source_manifest.json`;
++- an explicit `--manifest PATH` must override the mode-specific default;
++- selecting the default manifest must occur after argument parsing and must be clear and testable;
++- update `.gitignore` and documentation if necessary;
++- add a CLI test proving that default offline and live paths cannot coincide, without making a network request.
++
++## Defect 2: RSS candidates have no durable history
++
++The current manifest records only the candidates present in the latest RSS response. It does not identify newly discovered URLs, preserve candidates that later disappear from the feed, or retain history when RSS retrieval fails. Consequently, the tool cannot yet answer its core operational question: “Did a new report candidate appear?”
++
++Requirements:
++
++- preserve a cumulative candidate registry in generated state;
++- identify candidates by exact discovered URL at this stage; do not infer report identity from filenames;
++- for every candidate retain at least:
++  - URL,
++  - publisher/discovery endpoint,
++  - first-seen UTC timestamp,
++  - last-seen UTC timestamp,
++  - whether it is present in the current successful discovery response;
++- classify and report candidates newly observed in the current run;
++- retain previously observed candidates that are absent from a later successful feed response, marking them not currently present rather than deleting them;
++- if RSS retrieval or parsing fails, preserve prior candidate history and do not falsely mark all candidates absent;
++- do not automatically register or fetch candidate URLs;
++- ensure deterministic ordering;
++- make the human-readable summary show counts for total known candidates, newly discovered candidates, and candidates present in the current feed;
++- when new candidates exist, print their URLs so a human can review and register them;
++- add network-free tests covering:
++  1. first discovery;
++  2. a second unchanged discovery run;
++  3. a new candidate on a later run;
++  4. a previously seen candidate disappearing from a successful feed;
++  5. discovery transport or XML failure preserving prior history.
++
++## Audit details
++
++Also verify the following while making the narrow correction:
++
++- a `304 Not Modified` document response retains effective conditional metadata for future checks;
++- source or discovery errors remain visible in the summary without destroying prior successful state;
++- tests never access the network.
++
++Fix a confirmed problem in these details if found, but do not broaden scope.
++
++## Documentation and verification
++
++Update `README.md`, `data/README.md`, and `docs/source_investigation.md` only as needed to describe:
++
++- separate offline and live state;
++- durable candidate history;
++- the fact that candidates still require human review and are not epidemiologically validated.
++
++Run:
++
++- editable development installation;
++- complete pytest suite;
++- version command;
++- source listing;
++- offline check twice, demonstrating the second run has zero new candidates;
++- compile checks;
++- `git diff --check`;
++- `git status --short`.
++
++Do not run `git add`, `git commit`, `git push`, live network checks, releases, or GitHub configuration changes.
++
++Update `stage01_sources_report.log` with a clearly labeled review-correction section and final test results. Regenerate `stage01_sources_changes.diff` so it represents the complete final Stage 01 change set from the current `HEAD`, excluding the diff file itself. Do not modify Stage 00 artifacts.
++
++At the end, print a concise summary, exact test result, demonstration of isolated default manifests, candidate-history behavior, and `git status --short`.
+diff --git a/src/ebolalens/sources.py b/src/ebolalens/sources.py
+new file mode 100644
+index 0000000..b98bf87
+--- /dev/null
++++ b/src/ebolalens/sources.py
+@@ -0,0 +1,414 @@
++"""Official-source registry, safe retrieval, and version tracking."""
++
++from __future__ import annotations
++
++import base64
++import copy
++import hashlib
++import json
++import os
++import re
++import tempfile
++import urllib.error
++import urllib.request
++import xml.etree.ElementTree as ET
++from dataclasses import dataclass
++from pathlib import Path
++from typing import Any, Callable
++from urllib.parse import urlparse
++
++USER_AGENT = "EbolaLens/0.0.0 source-registry (+https://github.com/)"
++MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024
++REQUEST_TIMEOUT_SECONDS = 15
++OFFLINE_TIMESTAMP = "2000-01-01T00:00:00Z"
++
++
++class ConfigurationError(ValueError):
++    """Raised when the maintained source registry is unusable."""
++
++
++class TransportError(RuntimeError):
++    """Raised when a URL cannot be retrieved safely."""
++
++
++@dataclass(frozen=True)
++class FetchResult:
++    """A bounded retrieval result from the transport boundary."""
++
++    status: int
++    resolved_url: str
++    body: bytes
++    media_type: str | None = None
++    etag: str | None = None
++    last_modified: str | None = None
++
++
++Transport = Callable[[str, str | None, str | None], FetchResult]
++
++
++def load_config(path: Path) -> dict[str, Any]:
++    """Load and validate maintained JSON configuration."""
++    try:
++        config = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise ConfigurationError(f"cannot load {path}: {exc}") from exc
++
++    if not isinstance(config, dict) or config.get("schema_version") != 1:
++        raise ConfigurationError("configuration schema_version must be 1")
++
++    seen_ids: set[str] = set()
++    seen_urls: set[str] = set()
++    for group in ("source_pages", "discovery_endpoints", "documents"):
++        entries = config.get(group)
++        if not isinstance(entries, list):
++            raise ConfigurationError(f"{group} must be a list")
++        for entry in entries:
++            if not isinstance(entry, dict):
++                raise ConfigurationError(f"every {group} entry must be an object")
++            missing = {
++                "id",
++                "publisher",
++                "source_type",
++                "canonical_url",
++                "discovery_method",
++            } - entry.keys()
++            if missing:
++                raise ConfigurationError(
++                    f"{group} entry is missing: {', '.join(sorted(missing))}"
++                )
++            if entry["id"] in seen_ids:
++                raise ConfigurationError(f"duplicate id: {entry['id']}")
++            seen_ids.add(entry["id"])
++            parsed = urlparse(entry["canonical_url"])
++            if parsed.scheme != "https" or not parsed.netloc:
++                raise ConfigurationError(
++                    f"canonical_url must be an absolute HTTPS URL: {entry['id']}"
++                )
++            if entry["canonical_url"] in seen_urls:
++                raise ConfigurationError(f"duplicate canonical_url: {entry['canonical_url']}")
++            seen_urls.add(entry["canonical_url"])
++            if group == "documents":
++                required_nullable = {"aliases", "report_number", "reporting_date", "publication_date"}
++                if not required_nullable <= entry.keys() or not isinstance(entry["aliases"], list):
++                    raise ConfigurationError(f"invalid document metadata: {entry['id']}")
++    return config
++
++
++def load_manifest(path: Path) -> dict[str, Any] | None:
++    """Load prior generated state, if present."""
++    if not path.exists():
++        return None
++    try:
++        manifest = json.loads(path.read_text(encoding="utf-8"))
++    except (OSError, json.JSONDecodeError) as exc:
++        raise ConfigurationError(f"cannot load prior manifest {path}: {exc}") from exc
++    if not isinstance(manifest, dict) or manifest.get("schema_version") != 1:
++        raise ConfigurationError("manifest schema_version must be 1")
++    return manifest
++
++
++def write_manifest_atomic(path: Path, manifest: dict[str, Any]) -> None:
++    """Write deterministic JSON and atomically replace the prior manifest."""
++    encoded = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode("utf-8")
++    path.parent.mkdir(parents=True, exist_ok=True)
++    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
++    try:
++        with os.fdopen(descriptor, "wb") as stream:
++            stream.write(encoded)
++            stream.flush()
++            os.fsync(stream.fileno())
++        os.replace(temporary_name, path)
++    except BaseException:
++        try:
++            os.unlink(temporary_name)
++        except FileNotFoundError:
++            pass
++        raise
++
++
++def live_transport(
++    url: str, etag: str | None = None, last_modified: str | None = None
++) -> FetchResult:
++    """Retrieve one URL with conditional headers, timeouts, and a size bound."""
++    headers = {"User-Agent": USER_AGENT, "Accept": "*/*"}
++    if etag:
++        headers["If-None-Match"] = etag
++    if last_modified:
++        headers["If-Modified-Since"] = last_modified
++    request = urllib.request.Request(url, headers=headers)
++    try:
++        response = urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS)
++    except urllib.error.HTTPError as exc:
++        if exc.code == 304:
++            return FetchResult(304, exc.geturl(), b"", exc.headers.get_content_type())
++        return FetchResult(exc.code, exc.geturl(), b"", exc.headers.get_content_type())
++    except (urllib.error.URLError, TimeoutError, OSError) as exc:
++        raise TransportError(str(exc)) from exc
++
++    with response:
++        declared_length = response.headers.get("Content-Length")
++        if declared_length and int(declared_length) > MAX_DOWNLOAD_BYTES:
++            raise TransportError(f"payload exceeds {MAX_DOWNLOAD_BYTES} byte limit")
++        body = response.read(MAX_DOWNLOAD_BYTES + 1)
++        if len(body) > MAX_DOWNLOAD_BYTES:
++            raise TransportError(f"payload exceeds {MAX_DOWNLOAD_BYTES} byte limit")
++        return FetchResult(
++            response.status,
++            response.geturl(),
++            body,
++            response.headers.get("Content-Type"),
++            response.headers.get("ETag"),
++            response.headers.get("Last-Modified"),
++        )
++
++
++def offline_transport(config: dict[str, Any], config_path: Path) -> Transport:
++    """Build a deterministic transport backed by committed synthetic fixtures."""
++    fixtures: dict[str, tuple[Path, str | None]] = {}
++    for group in ("source_pages", "discovery_endpoints", "documents"):
++        for entry in config[group]:
++            fixture = entry.get("offline_fixture")
++            if fixture:
++                fixtures[entry["canonical_url"]] = (
++                    config_path.parent / fixture,
++                    entry.get("offline_media_type"),
++                )
++
++    def fetch(url: str, _etag: str | None = None, _modified: str | None = None) -> FetchResult:
++        try:
++            fixture_path, media_type = fixtures[url]
++            body = fixture_path.read_bytes()
++        except (KeyError, OSError) as exc:
++            raise TransportError(f"offline fixture unavailable for {url}: {exc}") from exc
++        return FetchResult(200, url, body, media_type)
++
++    return fetch
++
++
++def discover_rss_urls(body: bytes) -> list[str]:
++    """Extract item and directly embedded PDF URLs from a confirmed RSS feed."""
++    try:
++        root = ET.fromstring(body)
++    except ET.ParseError as exc:
++        raise TransportError(f"invalid RSS XML: {exc}") from exc
++    urls = {
++        element.text.strip()
++        for element in root.findall("./channel/item/link")
++        if element.text and element.text.strip().startswith("https://")
++    }
++    text = " ".join(root.itertext())
++    for token in re.findall(r"pdfemb-data=([A-Za-z0-9_-]+)", text):
++        try:
++            padding = "=" * (-len(token) % 4)
++            payload = json.loads(base64.urlsafe_b64decode(token + padding))
++            embedded_url = payload.get("url")
++            if isinstance(embedded_url, str) and embedded_url.startswith("https://"):
++                urls.add(embedded_url)
++        except (ValueError, json.JSONDecodeError):
++            continue
++    return sorted(urls)
++
++
++def _prior_record(records: list[dict[str, Any]], record_id: str) -> dict[str, Any] | None:
++    return next((record for record in records if record.get("id") == record_id), None)
++
++
++def _conditional_metadata(
++    record: dict[str, Any] | None, payloads: list[dict[str, Any]]
++) -> tuple[str | None, str | None]:
++    if not record or not record.get("versions"):
++        return None, None
++    version_id = record["versions"][-1]
++    payload = next((item for item in payloads if item["version_id"] == version_id), None)
++    if not payload:
++        return None, None
++    return payload.get("etag"), payload.get("last_modified")
++
++
++def check_registry(
++    config: dict[str, Any],
++    prior: dict[str, Any] | None,
++    fetch: Transport,
++    checked_at: str,
++) -> dict[str, Any]:
++    """Check every registered URL while retaining successes and failures."""
++    old = prior or {
++        "source_pages": [],
++        "discovery_endpoints": [],
++        "documents": [],
++        "payloads": [],
++        "candidates": [],
++    }
++    manifest: dict[str, Any] = {
++        "schema_version": 1,
++        "generated_at": checked_at,
++        "source_pages": [],
++        "discovery_endpoints": [],
++        "documents": [],
++        "payloads": copy.deepcopy(old.get("payloads", [])),
++        "candidates": copy.deepcopy(old.get("candidates", [])),
++    }
++    for candidate in manifest["candidates"]:
++        candidate["newly_discovered"] = False
++
++    for group in ("source_pages", "discovery_endpoints"):
++        for entry in config[group]:
++            previous = _prior_record(old.get(group, []), entry["id"])
++            record = copy.deepcopy(previous) if previous else {
++                "id": entry["id"],
++                "first_seen": checked_at,
++            }
++            record.update(
++                publisher=entry["publisher"],
++                source_type=entry["source_type"],
++                canonical_url=entry["canonical_url"],
++                discovery_method=entry["discovery_method"],
++                last_checked=checked_at,
++                status="error",
++                error=None,
++            )
++            try:
++                result = fetch(entry["canonical_url"], None, None)
++                record.update(
++                    resolved_url=result.resolved_url,
++                    http_status=result.status,
++                    media_type=result.media_type,
++                    byte_length=len(result.body),
++                    etag=result.etag,
++                    last_modified=result.last_modified,
++                )
++                if 200 <= result.status < 300:
++                    record["status"] = "ok"
++                    if group == "discovery_endpoints" and entry["source_type"] == "rss_feed":
++                        discovered_urls = discover_rss_urls(result.body)
++                        record["discovered_urls"] = discovered_urls
++                        for candidate in manifest["candidates"]:
++                            if candidate["discovery_endpoint"] == entry["id"]:
++                                candidate["present_in_current_response"] = False
++                        for url in discovered_urls:
++                            candidate = next(
++                                (item for item in manifest["candidates"] if item["url"] == url),
++                                None,
++                            )
++                            if candidate is None:
++                                candidate = {
++                                    "url": url,
++                                    "publisher": entry["publisher"],
++                                    "discovery_endpoint": entry["id"],
++                                    "first_seen": checked_at,
++                                    "last_seen": checked_at,
++                                    "present_in_current_response": True,
++                                    "newly_discovered": True,
++                                }
++                                manifest["candidates"].append(candidate)
++                            else:
++                                candidate["last_seen"] = checked_at
++                                candidate["present_in_current_response"] = True
++                else:
++                    record["status"] = "http_error"
++                    record["error"] = f"HTTP {result.status}"
++            except (TransportError, ValueError) as exc:
++                record["status"] = "error"
++                record["error"] = str(exc)
++            manifest[group].append(record)
++
++    for entry in config["documents"]:
++        previous = _prior_record(old.get("documents", []), entry["id"])
++        record = copy.deepcopy(previous) if previous else {
++            "id": entry["id"],
++            "first_seen": checked_at,
++            "versions": [],
++        }
++        record.update(
++            publisher=entry["publisher"],
++            source_type=entry["source_type"],
++            canonical_url=entry["canonical_url"],
++            aliases=sorted(set(entry["aliases"])),
++            report_number=entry["report_number"],
++            reporting_date=entry["reporting_date"],
++            publication_date=entry["publication_date"],
++            discovery_method=entry["discovery_method"],
++            last_checked=checked_at,
++            status="error",
++            error=None,
++        )
++        etag, modified = _conditional_metadata(previous, manifest["payloads"])
++        try:
++            result = fetch(entry["canonical_url"], etag, modified)
++            record.update(
++                resolved_url=result.resolved_url,
++                http_status=result.status,
++                media_type=result.media_type,
++                etag=result.etag,
++                last_modified=result.last_modified,
++            )
++            if result.status == 304 and record["versions"]:
++                record["status"] = "unchanged"
++            elif 200 <= result.status < 300:
++                if len(result.body) > MAX_DOWNLOAD_BYTES:
++                    raise TransportError(f"payload exceeds {MAX_DOWNLOAD_BYTES} byte limit")
++                digest = hashlib.sha256(result.body).hexdigest()
++                version_id = f"sha256:{digest}"
++                payload = next(
++                    (item for item in manifest["payloads"] if item["version_id"] == version_id),
++                    None,
++                )
++                observed = sorted({entry["canonical_url"], result.resolved_url, *entry["aliases"]})
++                if payload:
++                    payload["observed_urls"] = sorted(set(payload["observed_urls"]) | set(observed))
++                    payload["last_checked"] = checked_at
++                    record["status"] = "unchanged" if version_id in record["versions"] else "alias"
++                else:
++                    payload = {
++                        "version_id": version_id,
++                        "sha256": digest,
++                        "observed_urls": observed,
++                        "retrieval_timestamp": checked_at,
++                        "first_seen": checked_at,
++                        "last_checked": checked_at,
++                        "http_status": result.status,
++                        "media_type": result.media_type,
++                        "byte_length": len(result.body),
++                        "etag": result.etag,
++                        "last_modified": result.last_modified,
++                    }
++                    manifest["payloads"].append(payload)
++                    record["status"] = "new_version"
++                if version_id not in record["versions"]:
++                    record["versions"].append(version_id)
++                record["byte_length"] = len(result.body)
++                record["sha256"] = digest
++            else:
++                record["status"] = "http_error"
++                record["error"] = f"HTTP {result.status}"
++        except (TransportError, ValueError) as exc:
++            record["error"] = str(exc)
++        manifest["documents"].append(record)
++
++    manifest["payloads"].sort(key=lambda item: item["version_id"])
++    manifest["candidates"].sort(key=lambda item: item["url"])
++    return manifest
++
++
++def summarize(manifest: dict[str, Any]) -> str:
++    """Return a concise deterministic human-readable check report."""
++    records = [
++        *manifest["source_pages"],
++        *manifest["discovery_endpoints"],
++        *manifest["documents"],
++    ]
++    lines = [f"checked {len(records)} registered URLs at {manifest['generated_at']}"]
++    for record in records:
++        detail = f": {record['error']}" if record.get("error") else ""
++        lines.append(f"{record['id']}: {record['status']}{detail}")
++    candidates = manifest.get("candidates", [])
++    new_candidates = [item for item in candidates if item["newly_discovered"]]
++    present_candidates = [item for item in candidates if item["present_in_current_response"]]
++    lines.append(f"total known candidates: {len(candidates)}")
++    lines.append(f"newly discovered candidates: {len(new_candidates)}")
++    lines.append(f"candidates present in current feed: {len(present_candidates)}")
++    if new_candidates:
++        lines.append("new candidate URLs:")
++        lines.extend(f"  {item['url']}" for item in new_candidates)
++    lines.append(f"unique document payloads: {len(manifest['payloads'])}")
++    return "\n".join(lines)
+diff --git a/stage01_sources_report.log b/stage01_sources_report.log
+new file mode 100644
+index 0000000..84cb1f3
+--- /dev/null
++++ b/stage01_sources_report.log
+@@ -0,0 +1,156 @@
++EbolaLens stage 01 source-registry report
++=========================================
++
++Investigation (2026-09-06)
++--------------------------
++All requests were sequential and read-only, with an EbolaLens user agent, a
++5-second connection timeout, a 15-second total timeout, redirects enabled, and
++bounded response sizes. Temporary responses were stored only under /tmp.
++
++- https://insp.cd/ -> HTTP 200; exposed WordPress REST metadata and links to
++  the SitRep category and individual SitRep posts.
++- https://insp.cd/wp-json/ -> HTTP 200, application/json.
++- https://insp.cd/wp-json/wp/v2/search?search=sitrep&per_page=10 -> HTTP 200;
++  returned 10 SitRep post candidates, but search ranking is not a durable index.
++- https://insp.cd/category/sitrep/feed/ -> HTTP 200, application/rss+xml;
++  contained official post links and embedded PDF metadata. This confirmed RSS
++  endpoint is the only automatic discovery mechanism enabled in stage 01.
++- https://insp.cd/wp-sitemap.xml -> HTTP 404.
++- https://insp.cd/robots.txt -> HTTP 200, general access allowed; it declared
++  https://insp.cd/sitemap.xml.
++- https://insp.cd/sitemap.xml -> HTTP 404.
++- The first sandboxed request could not resolve insp.cd; the same bounded request
++  succeeded after explicit network approval. This was a local sandbox limitation,
++  not recorded as an INSP service failure.
++
++Implementation
++--------------
++- Added a validated, maintained JSON registry at data/sources.json with three
++  official source pages, the confirmed INSP RSS endpoint, and three confirmed
++  INSP seed-document URLs.
++- Added only small synthetic offline fixtures; no live PDF bytes were committed.
++- Added standard-library retrieval with descriptive user agent, 15-second timeout,
++  a 10 MiB bound, redirects, ETag/Last-Modified conditional requests, SHA-256
++  payload identity, alias consolidation, retained failures, and atomic manifest
++  replacement.
++- Added deterministic JSON state and concise text summaries. Runtime state is
++  generated at data/generated/source_manifest.json and ignored by Git.
++- Added CLI list, offline check, and live check commands while preserving the
++  version command.
++- Added deterministic network-free tests for configuration validation, RSS
++  discovery, unchanged and changed payloads, URL aliases, failure retention,
++  atomic writing, offline CLI behavior, and the existing version behavior.
++- Updated README.md, data/README.md, and added docs/source_investigation.md.
++
++Verification
++------------
++- .venv/bin/python -m pip install -e '.[dev]'
++  Result: editable ebolalens 0.0.0 installation succeeded; pytest 9.1.1 present.
++- .venv/bin/python -m pytest -q
++  Exact final result:
++    ..........                                                               [100%]
++    10 passed in 0.48s
++- .venv/bin/python -m ebolalens --version
++  Result: ebolalens 0.0.0
++- .venv/bin/python -m ebolalens sources list
++  Result: listed 3 source pages, 1 discovery endpoint, and 3 known documents.
++- .venv/bin/python -m ebolalens sources check --offline
++  Result: 7 URLs checked successfully at the fixed offline timestamp, 1 fixture
++  candidate URL discovered, and 3 unique synthetic payloads recorded.
++- .venv/bin/python -m ebolalens sources check --live --manifest
++  /tmp/ebolalens_stage01_live_manifest.json
++  Exact summary:
++    checked 7 registered URLs at 2026-09-05T23:11:04.454220Z
++    insp-home: ok
++    who-outbreak-page: ok
++    who-don-index: ok
++    insp-sitrep-feed: ok
++    insp-seed-draft-mve-ituri-actuelb-1: new_version
++    insp-seed-sitrep-055: new_version
++    insp-seed-sitrep-068: new_version
++    discovered candidate URLs: 20
++    unique document payloads: 3
++- .venv/bin/python -m compileall -q src tests
++  Result: completed successfully with no output.
++- git diff --check
++  Result: completed successfully with no output.
++- Inspected file sizes, generated state, source changes, and tracked text for
++  secrets or accidental downloads. No secrets or downloaded live payloads were
++  found in the worktree.
++
++Limitations and assumptions
++---------------------------
++- RSS may omit history or disappear; discovered URLs remain candidates and are
++  not automatically treated as registered or epidemiologically valid documents.
++- WordPress REST was reachable but is not automatically queried in stage 01.
++- Both tested sitemap URLs returned 404. WHO pages are monitored but not scraped.
++- Report numbers and dates visible only in filenames remain null until explicitly
++  verified from authoritative metadata; filenames are never document identity.
++- A successful HTTP response validates reachability and byte identity only, not
++  epidemiological contents.
++- The stage 00 control artifacts were not modified. No git add, commit, push,
++  release, or GitHub operation was performed.
++- The unified diff excludes itself to avoid recursive content.
++
++Review correction 01a — manifest isolation and candidate history
++=================================================================
++
++Corrections implemented
++-----------------------
++- Live checks retain data/generated/source_manifest.json as their default state.
++  Offline checks now default to data/generated/offline_source_manifest.json.
++  CLI parsing leaves --manifest unset until the selected mode is known; an
++  explicit path overrides either default.
++- Removed the pre-correction data/generated/source_manifest.json after confirming
++  it had been created by the earlier synthetic offline verification. It was an
++  ignored generated file, not committed state, and can be regenerated only by a
++  future live check. The isolated offline manifest remains available.
++- Added a cumulative, URL-keyed candidate registry with publisher, discovery
++  endpoint, first-seen and last-seen UTC timestamps, current-response presence,
++  and per-run newly-discovered classification.
++- A later successful feed marks missing candidates not currently present without
++  deleting them. Transport and XML failures preserve prior candidate history and
++  last successful presence state.
++- Summaries now report total, new, and currently present candidate counts, print
++  new URLs for human review, and include source/discovery error details.
++- Candidate URLs are not fetched or registered automatically and receive no
++  inferred identity or epidemiological validation.
++- Audited HTTP 304 behavior and added a regression test proving that ETag and
++  Last-Modified values remain effective for subsequent conditional checks.
++- Fixed a confirmed audit bug: an RSS XML parse failure previously retained an
++  endpoint status of "ok" while setting an error. It now reports status "error"
++  and preserves the prior successful endpoint and candidate details.
++
++Network-free verification
++-------------------------
++- .venv/bin/python -m pip install -e '.[dev]'
++  Initial sandboxed attempt failed because build isolation could not resolve the
++  package index. The same command succeeded after explicit network approval.
++- .venv/bin/python -m pytest -q
++  Exact final result:
++    .................                                                        [100%]
++    17 passed in 0.47s
++- .venv/bin/python -m ebolalens --version
++  Result: ebolalens 0.0.0
++- .venv/bin/python -m ebolalens sources list
++  Result: listed 3 source pages, 1 discovery endpoint, and 3 known documents.
++- First .venv/bin/python -m ebolalens sources check --offline:
++    total known candidates: 1
++    newly discovered candidates: 1
++    candidates present in current feed: 1
++    new candidate URL: https://insp.cd/sitrep-fixture/
++- Second .venv/bin/python -m ebolalens sources check --offline:
++    total known candidates: 1
++    newly discovered candidates: 0
++    candidates present in current feed: 1
++- Default-path demonstration:
++    live default: data/generated/source_manifest.json
++    offline default: data/generated/offline_source_manifest.json
++    distinct: True
++- .venv/bin/python -m compileall -q src tests
++  Result: completed successfully with no output.
++- git diff --check
++  Result: completed successfully with no output.
++- No live network check was run during correction 01a, as explicitly required.
++- Stage 00 report and diff remain unchanged. No git add, commit, push, release,
++  or GitHub configuration operation was performed.
+diff --git a/tests/test_sources.py b/tests/test_sources.py
+new file mode 100644
+index 0000000..098e3e1
+--- /dev/null
++++ b/tests/test_sources.py
+@@ -0,0 +1,339 @@
++"""Deterministic tests for source checking and manifest state."""
++
++from __future__ import annotations
++
++import base64
++import json
++import subprocess
++import sys
++from pathlib import Path
++
++import pytest
++
++import ebolalens.__main__ as cli
++from ebolalens.sources import (
++    ConfigurationError,
++    FetchResult,
++    TransportError,
++    check_registry,
++    discover_rss_urls,
++    load_config,
++    summarize,
++    write_manifest_atomic,
++)
++
++
++def config_for(*documents: tuple[str, str]) -> dict:
++    return {
++        "schema_version": 1,
++        "source_pages": [],
++        "discovery_endpoints": [],
++        "documents": [
++            {
++                "id": document_id,
++                "publisher": "INSP",
++                "source_type": "official_report",
++                "canonical_url": url,
++                "aliases": [],
++                "report_number": None,
++                "reporting_date": None,
++                "publication_date": None,
++                "discovery_method": "test_fixture",
++            }
++            for document_id, url in documents
++        ],
++    }
++
++
++def fixed_fetch(payloads: dict[str, bytes]):
++    def fetch(url: str, _etag: str | None, _modified: str | None) -> FetchResult:
++        return FetchResult(200, url, payloads[url], "application/pdf", '"fixture"')
++
++    return fetch
++
++
++def discovery_config() -> dict:
++    return {
++        "schema_version": 1,
++        "source_pages": [],
++        "discovery_endpoints": [
++            {
++                "id": "feed",
++                "publisher": "INSP",
++                "source_type": "rss_feed",
++                "canonical_url": "https://example.test/feed/",
++                "discovery_method": "test_fixture",
++            }
++        ],
++        "documents": [],
++    }
++
++
++def rss_fetch(*urls: str):
++    items = "".join(f"<item><link>{url}</link></item>" for url in urls)
++    body = f"<rss><channel>{items}</channel></rss>".encode()
++
++    def fetch(url: str, _etag: str | None, _modified: str | None) -> FetchResult:
++        return FetchResult(200, url, body, "application/rss+xml")
++
++    return fetch
++
++
++def test_configuration_loading_and_validation(tmp_path: Path) -> None:
++    valid = config_for(("document-1", "https://example.test/report.pdf"))
++    path = tmp_path / "sources.json"
++    path.write_text(json.dumps(valid), encoding="utf-8")
++    assert load_config(path) == valid
++
++    valid["documents"][0]["canonical_url"] = "http://example.test/report.pdf"
++    path.write_text(json.dumps(valid), encoding="utf-8")
++    with pytest.raises(ConfigurationError, match="HTTPS"):
++        load_config(path)
++
++
++def test_rss_discovery_extracts_post_and_embedded_pdf_urls() -> None:
++    metadata = base64.urlsafe_b64encode(
++        json.dumps({"url": "https://insp.cd/uploads/report.pdf"}).encode()
++    ).decode().rstrip("=")
++    feed = f"""<?xml version="1.0"?>
++    <rss><channel><item><link>https://insp.cd/sitrep-post/</link>
++    <description><![CDATA[<iframe src="https://insp.cd/?pdfemb-data={metadata}"></iframe>]]>
++    </description></item></channel></rss>""".encode()
++
++    assert discover_rss_urls(feed) == [
++        "https://insp.cd/sitrep-post/",
++        "https://insp.cd/uploads/report.pdf",
++    ]
++
++
++def test_candidate_history_first_and_unchanged_discovery() -> None:
++    url = "https://example.test/report-a.pdf"
++    first = check_registry(discovery_config(), None, rss_fetch(url), "2026-01-01T00:00:00Z")
++    assert first["candidates"] == [
++        {
++            "url": url,
++            "publisher": "INSP",
++            "discovery_endpoint": "feed",
++            "first_seen": "2026-01-01T00:00:00Z",
++            "last_seen": "2026-01-01T00:00:00Z",
++            "present_in_current_response": True,
++            "newly_discovered": True,
++        }
++    ]
++
++    second = check_registry(
++        discovery_config(), first, rss_fetch(url), "2026-01-02T00:00:00Z"
++    )
++    assert second["candidates"][0]["first_seen"] == "2026-01-01T00:00:00Z"
++    assert second["candidates"][0]["last_seen"] == "2026-01-02T00:00:00Z"
++    assert second["candidates"][0]["newly_discovered"] is False
++    assert "newly discovered candidates: 0" in summarize(second)
++
++
++def test_new_candidate_on_later_run_is_reported() -> None:
++    first_url = "https://example.test/report-a.pdf"
++    new_url = "https://example.test/report-b.pdf"
++    first = check_registry(
++        discovery_config(), None, rss_fetch(first_url), "2026-01-01T00:00:00Z"
++    )
++    second = check_registry(
++        discovery_config(),
++        first,
++        rss_fetch(first_url, new_url),
++        "2026-01-02T00:00:00Z",
++    )
++
++    assert [item["url"] for item in second["candidates"]] == [first_url, new_url]
++    assert [item["url"] for item in second["candidates"] if item["newly_discovered"]] == [
++        new_url
++    ]
++    assert new_url in summarize(second)
++
++
++def test_disappearing_candidate_is_retained_but_not_present() -> None:
++    first_url = "https://example.test/report-a.pdf"
++    second_url = "https://example.test/report-b.pdf"
++    first = check_registry(
++        discovery_config(),
++        None,
++        rss_fetch(first_url, second_url),
++        "2026-01-01T00:00:00Z",
++    )
++    second = check_registry(
++        discovery_config(), first, rss_fetch(second_url), "2026-01-02T00:00:00Z"
++    )
++
++    assert len(second["candidates"]) == 2
++    assert second["candidates"][0]["url"] == first_url
++    assert second["candidates"][0]["present_in_current_response"] is False
++    assert second["candidates"][0]["last_seen"] == "2026-01-01T00:00:00Z"
++
++
++@pytest.mark.parametrize("failure", ["transport", "xml"])
++def test_discovery_failure_preserves_candidate_history(failure: str) -> None:
++    url = "https://example.test/report-a.pdf"
++    first = check_registry(discovery_config(), None, rss_fetch(url), "2026-01-01T00:00:00Z")
++
++    def failed_fetch(feed_url: str, _etag: str | None, _modified: str | None) -> FetchResult:
++        if failure == "transport":
++            raise TransportError("feed unavailable")
++        return FetchResult(200, feed_url, b"not xml", "application/rss+xml")
++
++    second = check_registry(discovery_config(), first, failed_fetch, "2026-01-02T00:00:00Z")
++    assert second["candidates"][0]["url"] == url
++    assert second["candidates"][0]["present_in_current_response"] is True
++    assert second["candidates"][0]["last_seen"] == "2026-01-01T00:00:00Z"
++    assert second["discovery_endpoints"][0]["status"] == "error"
++    assert second["discovery_endpoints"][0]["error"]
++    assert second["discovery_endpoints"][0]["discovered_urls"] == [url]
++    assert second["discovery_endpoints"][0]["error"] in summarize(second)
++
++
++def test_unchanged_content_at_same_url() -> None:
++    url = "https://example.test/report.pdf"
++    config = config_for(("document-1", url))
++    first = check_registry(config, None, fixed_fetch({url: b"same"}), "2026-01-01T00:00:00Z")
++    second = check_registry(config, first, fixed_fetch({url: b"same"}), "2026-01-02T00:00:00Z")
++
++    assert len(second["payloads"]) == 1
++    assert second["documents"][0]["status"] == "unchanged"
++    assert len(second["documents"][0]["versions"]) == 1
++
++
++def test_304_retains_conditional_metadata_for_future_checks() -> None:
++    url = "https://example.test/report.pdf"
++    config = config_for(("document-1", url))
++    calls: list[tuple[str | None, str | None]] = []
++
++    def fetch(_url: str, etag: str | None, modified: str | None) -> FetchResult:
++        calls.append((etag, modified))
++        if len(calls) == 1:
++            return FetchResult(
++                200,
++                url,
++                b"same",
++                "application/pdf",
++                '"etag-1"',
++                "Wed, 01 Jan 2026 00:00:00 GMT",
++            )
++        return FetchResult(304, url, b"")
++
++    first = check_registry(config, None, fetch, "2026-01-01T00:00:00Z")
++    second = check_registry(config, first, fetch, "2026-01-02T00:00:00Z")
++    third = check_registry(config, second, fetch, "2026-01-03T00:00:00Z")
++
++    expected = ('"etag-1"', "Wed, 01 Jan 2026 00:00:00 GMT")
++    assert calls == [(None, None), expected, expected]
++    assert third["documents"][0]["status"] == "unchanged"
++
++
++def test_changed_bytes_create_new_version() -> None:
++    url = "https://example.test/report.pdf"
++    config = config_for(("document-1", url))
++    first = check_registry(config, None, fixed_fetch({url: b"before"}), "2026-01-01T00:00:00Z")
++    second = check_registry(config, first, fixed_fetch({url: b"after"}), "2026-01-02T00:00:00Z")
++
++    assert len(second["payloads"]) == 2
++    assert len(second["documents"][0]["versions"]) == 2
++    assert second["documents"][0]["status"] == "new_version"
++
++
++def test_identical_bytes_at_second_url_are_alias() -> None:
++    first_url = "https://example.test/first.pdf"
++    second_url = "https://example.test/second.pdf"
++    config = config_for(("document-1", first_url), ("document-2", second_url))
++    manifest = check_registry(
++        config,
++        None,
++        fixed_fetch({first_url: b"identical", second_url: b"identical"}),
++        "2026-01-01T00:00:00Z",
++    )
++
++    assert len(manifest["payloads"]) == 1
++    assert manifest["payloads"][0]["observed_urls"] == [first_url, second_url]
++    assert manifest["documents"][1]["status"] == "alias"
++
++
++def test_transport_failure_preserves_prior_state() -> None:
++    url = "https://example.test/report.pdf"
++    config = config_for(("document-1", url))
++    first = check_registry(config, None, fixed_fetch({url: b"retained"}), "2026-01-01T00:00:00Z")
++
++    def failing_fetch(_url: str, _etag: str | None, _modified: str | None) -> FetchResult:
++        raise TransportError("timed out")
++
++    second = check_registry(config, first, failing_fetch, "2026-01-02T00:00:00Z")
++    assert second["payloads"] == first["payloads"]
++    assert second["documents"][0]["versions"] == first["documents"][0]["versions"]
++    assert second["documents"][0]["status"] == "error"
++    assert second["documents"][0]["error"] == "timed out"
++
++
++def test_atomic_manifest_writing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
++    target = tmp_path / "generated" / "manifest.json"
++    replacements: list[tuple[str, Path]] = []
++    real_replace = __import__("os").replace
++
++    def recording_replace(source: str, destination: Path) -> None:
++        assert Path(source).parent == target.parent
++        replacements.append((source, destination))
++        real_replace(source, destination)
++
++    monkeypatch.setattr("ebolalens.sources.os.replace", recording_replace)
++    manifest = {"schema_version": 1, "payloads": []}
++    write_manifest_atomic(target, manifest)
++
++    assert json.loads(target.read_text(encoding="utf-8")) == manifest
++    assert len(replacements) == 1
++    assert not list(target.parent.glob(f".{target.name}.*"))
++
++
++def test_offline_cli(tmp_path: Path) -> None:
++    manifest = tmp_path / "manifest.json"
++    result = subprocess.run(
++        [
++            sys.executable,
++            "-m",
++            "ebolalens",
++            "sources",
++            "check",
++            "--offline",
++            "--manifest",
++            str(manifest),
++        ],
++        check=False,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.returncode == 0
++    assert "checked 7 registered URLs" in result.stdout
++    assert len(json.loads(manifest.read_text(encoding="utf-8"))["payloads"]) == 3
++
++
++def test_cli_uses_isolated_default_manifests_without_network(
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    selected: list[tuple[Path, bool]] = []
++
++    def fake_check(_config: Path, manifest: Path, live: bool) -> int:
++        selected.append((manifest, live))
++        return 0
++
++    monkeypatch.setattr(cli, "_check_sources", fake_check)
++    monkeypatch.setattr(sys, "argv", ["ebolalens", "sources", "check", "--offline"])
++    assert cli.main() == 0
++    monkeypatch.setattr(sys, "argv", ["ebolalens", "sources", "check", "--live"])
++    assert cli.main() == 0
++    override = Path("custom.json")
++    monkeypatch.setattr(
++        sys,
++        "argv",
++        ["ebolalens", "sources", "check", "--offline", "--manifest", str(override)],
++    )
++    assert cli.main() == 0
++
++    assert selected[0] == (cli.DEFAULT_OFFLINE_MANIFEST, False)
++    assert selected[1] == (cli.DEFAULT_LIVE_MANIFEST, True)
++    assert selected[0][0] != selected[1][0]
++    assert selected[2] == (override, False)

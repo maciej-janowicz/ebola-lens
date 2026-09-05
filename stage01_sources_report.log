@@ -1,0 +1,156 @@
+EbolaLens stage 01 source-registry report
+=========================================
+
+Investigation (2026-09-06)
+--------------------------
+All requests were sequential and read-only, with an EbolaLens user agent, a
+5-second connection timeout, a 15-second total timeout, redirects enabled, and
+bounded response sizes. Temporary responses were stored only under /tmp.
+
+- https://insp.cd/ -> HTTP 200; exposed WordPress REST metadata and links to
+  the SitRep category and individual SitRep posts.
+- https://insp.cd/wp-json/ -> HTTP 200, application/json.
+- https://insp.cd/wp-json/wp/v2/search?search=sitrep&per_page=10 -> HTTP 200;
+  returned 10 SitRep post candidates, but search ranking is not a durable index.
+- https://insp.cd/category/sitrep/feed/ -> HTTP 200, application/rss+xml;
+  contained official post links and embedded PDF metadata. This confirmed RSS
+  endpoint is the only automatic discovery mechanism enabled in stage 01.
+- https://insp.cd/wp-sitemap.xml -> HTTP 404.
+- https://insp.cd/robots.txt -> HTTP 200, general access allowed; it declared
+  https://insp.cd/sitemap.xml.
+- https://insp.cd/sitemap.xml -> HTTP 404.
+- The first sandboxed request could not resolve insp.cd; the same bounded request
+  succeeded after explicit network approval. This was a local sandbox limitation,
+  not recorded as an INSP service failure.
+
+Implementation
+--------------
+- Added a validated, maintained JSON registry at data/sources.json with three
+  official source pages, the confirmed INSP RSS endpoint, and three confirmed
+  INSP seed-document URLs.
+- Added only small synthetic offline fixtures; no live PDF bytes were committed.
+- Added standard-library retrieval with descriptive user agent, 15-second timeout,
+  a 10 MiB bound, redirects, ETag/Last-Modified conditional requests, SHA-256
+  payload identity, alias consolidation, retained failures, and atomic manifest
+  replacement.
+- Added deterministic JSON state and concise text summaries. Runtime state is
+  generated at data/generated/source_manifest.json and ignored by Git.
+- Added CLI list, offline check, and live check commands while preserving the
+  version command.
+- Added deterministic network-free tests for configuration validation, RSS
+  discovery, unchanged and changed payloads, URL aliases, failure retention,
+  atomic writing, offline CLI behavior, and the existing version behavior.
+- Updated README.md, data/README.md, and added docs/source_investigation.md.
+
+Verification
+------------
+- .venv/bin/python -m pip install -e '.[dev]'
+  Result: editable ebolalens 0.0.0 installation succeeded; pytest 9.1.1 present.
+- .venv/bin/python -m pytest -q
+  Exact final result:
+    ..........                                                               [100%]
+    10 passed in 0.48s
+- .venv/bin/python -m ebolalens --version
+  Result: ebolalens 0.0.0
+- .venv/bin/python -m ebolalens sources list
+  Result: listed 3 source pages, 1 discovery endpoint, and 3 known documents.
+- .venv/bin/python -m ebolalens sources check --offline
+  Result: 7 URLs checked successfully at the fixed offline timestamp, 1 fixture
+  candidate URL discovered, and 3 unique synthetic payloads recorded.
+- .venv/bin/python -m ebolalens sources check --live --manifest
+  /tmp/ebolalens_stage01_live_manifest.json
+  Exact summary:
+    checked 7 registered URLs at 2026-09-05T23:11:04.454220Z
+    insp-home: ok
+    who-outbreak-page: ok
+    who-don-index: ok
+    insp-sitrep-feed: ok
+    insp-seed-draft-mve-ituri-actuelb-1: new_version
+    insp-seed-sitrep-055: new_version
+    insp-seed-sitrep-068: new_version
+    discovered candidate URLs: 20
+    unique document payloads: 3
+- .venv/bin/python -m compileall -q src tests
+  Result: completed successfully with no output.
+- git diff --check
+  Result: completed successfully with no output.
+- Inspected file sizes, generated state, source changes, and tracked text for
+  secrets or accidental downloads. No secrets or downloaded live payloads were
+  found in the worktree.
+
+Limitations and assumptions
+---------------------------
+- RSS may omit history or disappear; discovered URLs remain candidates and are
+  not automatically treated as registered or epidemiologically valid documents.
+- WordPress REST was reachable but is not automatically queried in stage 01.
+- Both tested sitemap URLs returned 404. WHO pages are monitored but not scraped.
+- Report numbers and dates visible only in filenames remain null until explicitly
+  verified from authoritative metadata; filenames are never document identity.
+- A successful HTTP response validates reachability and byte identity only, not
+  epidemiological contents.
+- The stage 00 control artifacts were not modified. No git add, commit, push,
+  release, or GitHub operation was performed.
+- The unified diff excludes itself to avoid recursive content.
+
+Review correction 01a — manifest isolation and candidate history
+=================================================================
+
+Corrections implemented
+-----------------------
+- Live checks retain data/generated/source_manifest.json as their default state.
+  Offline checks now default to data/generated/offline_source_manifest.json.
+  CLI parsing leaves --manifest unset until the selected mode is known; an
+  explicit path overrides either default.
+- Removed the pre-correction data/generated/source_manifest.json after confirming
+  it had been created by the earlier synthetic offline verification. It was an
+  ignored generated file, not committed state, and can be regenerated only by a
+  future live check. The isolated offline manifest remains available.
+- Added a cumulative, URL-keyed candidate registry with publisher, discovery
+  endpoint, first-seen and last-seen UTC timestamps, current-response presence,
+  and per-run newly-discovered classification.
+- A later successful feed marks missing candidates not currently present without
+  deleting them. Transport and XML failures preserve prior candidate history and
+  last successful presence state.
+- Summaries now report total, new, and currently present candidate counts, print
+  new URLs for human review, and include source/discovery error details.
+- Candidate URLs are not fetched or registered automatically and receive no
+  inferred identity or epidemiological validation.
+- Audited HTTP 304 behavior and added a regression test proving that ETag and
+  Last-Modified values remain effective for subsequent conditional checks.
+- Fixed a confirmed audit bug: an RSS XML parse failure previously retained an
+  endpoint status of "ok" while setting an error. It now reports status "error"
+  and preserves the prior successful endpoint and candidate details.
+
+Network-free verification
+-------------------------
+- .venv/bin/python -m pip install -e '.[dev]'
+  Initial sandboxed attempt failed because build isolation could not resolve the
+  package index. The same command succeeded after explicit network approval.
+- .venv/bin/python -m pytest -q
+  Exact final result:
+    .................                                                        [100%]
+    17 passed in 0.47s
+- .venv/bin/python -m ebolalens --version
+  Result: ebolalens 0.0.0
+- .venv/bin/python -m ebolalens sources list
+  Result: listed 3 source pages, 1 discovery endpoint, and 3 known documents.
+- First .venv/bin/python -m ebolalens sources check --offline:
+    total known candidates: 1
+    newly discovered candidates: 1
+    candidates present in current feed: 1
+    new candidate URL: https://insp.cd/sitrep-fixture/
+- Second .venv/bin/python -m ebolalens sources check --offline:
+    total known candidates: 1
+    newly discovered candidates: 0
+    candidates present in current feed: 1
+- Default-path demonstration:
+    live default: data/generated/source_manifest.json
+    offline default: data/generated/offline_source_manifest.json
+    distinct: True
+- .venv/bin/python -m compileall -q src tests
+  Result: completed successfully with no output.
+- git diff --check
+  Result: completed successfully with no output.
+- No live network check was run during correction 01a, as explicitly required.
+- Stage 00 report and diff remain unchanged. No git add, commit, push, release,
+  or GitHub configuration operation was performed.

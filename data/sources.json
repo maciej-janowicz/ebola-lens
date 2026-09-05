@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "source_pages": [
+    {
+      "id": "insp-home",
+      "publisher": "INSP",
+      "source_type": "source_page",
+      "canonical_url": "https://insp.cd/",
+      "discovery_method": "manual_registry",
+      "offline_fixture": "fixtures/insp-home.html",
+      "offline_media_type": "text/html; charset=UTF-8"
+    },
+    {
+      "id": "who-outbreak-page",
+      "publisher": "WHO",
+      "source_type": "source_page",
+      "canonical_url": "https://www.who.int/emergencies/situations/ebola-outbreak---drc-2026",
+      "discovery_method": "manual_registry",
+      "offline_fixture": "fixtures/who-outbreak.html",
+      "offline_media_type": "text/html; charset=UTF-8"
+    },
+    {
+      "id": "who-don-index",
+      "publisher": "WHO",
+      "source_type": "source_page",
+      "canonical_url": "https://www.who.int/emergencies/disease-outbreak-news",
+      "discovery_method": "manual_registry",
+      "offline_fixture": "fixtures/who-don.html",
+      "offline_media_type": "text/html; charset=UTF-8"
+    }
+  ],
+  "discovery_endpoints": [
+    {
+      "id": "insp-sitrep-feed",
+      "publisher": "INSP",
+      "source_type": "rss_feed",
+      "canonical_url": "https://insp.cd/category/sitrep/feed/",
+      "discovery_method": "confirmed_official_rss",
+      "offline_fixture": "fixtures/insp-sitrep-feed.xml",
+      "offline_media_type": "application/rss+xml; charset=UTF-8"
+    }
+  ],
+  "documents": [
+    {
+      "id": "insp-seed-draft-mve-ituri-actuelb-1",
+      "publisher": "INSP",
+      "source_type": "official_report",
+      "canonical_url": "https://insp.cd/wp-content/uploads/2026/05/Draft-MVE-Ituri-ActuelB-1.pdf",
+      "aliases": [],
+      "report_number": null,
+      "reporting_date": null,
+      "publication_date": null,
+      "discovery_method": "confirmed_seed_url",
+      "offline_fixture": "fixtures/insp-seed-1.pdf",
+      "offline_media_type": "application/pdf"
+    },
+    {
+      "id": "insp-seed-sitrep-055",
+      "publisher": "INSP",
+      "source_type": "official_report",
+      "canonical_url": "https://insp.cd/wp-content/uploads/2026/07/Draft_SitRep_MVE_RDC_N%C2%B0055_08_07_2026.pdf",
+      "aliases": [],
+      "report_number": null,
+      "reporting_date": null,
+      "publication_date": null,
+      "discovery_method": "confirmed_seed_url",
+      "offline_fixture": "fixtures/insp-seed-55.pdf",
+      "offline_media_type": "application/pdf"
+    },
+    {
+      "id": "insp-seed-sitrep-068",
+      "publisher": "INSP",
+      "source_type": "official_report",
+      "canonical_url": "https://insp.cd/wp-content/uploads/2026/07/SitRep_MVE_RDC_N%C2%B0_68_21-07-2026.pdf",
+      "aliases": [],
+      "report_number": null,
+      "reporting_date": null,
+      "publication_date": null,
+      "discovery_method": "confirmed_seed_url",
+      "offline_fixture": "fixtures/insp-seed-68.pdf",
+      "offline_media_type": "application/pdf"
+    }
+  ]
+}
