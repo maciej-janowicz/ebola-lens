@@ -1,0 +1,54 @@
+EbolaLens stage 00 scaffold report
+==================================
+
+Created files
+-------------
+- .gitignore
+- README.md
+- pyproject.toml
+- src/ebolalens/__init__.py
+- src/ebolalens/__main__.py
+- tests/test_smoke.py
+- docs/project_charter.md
+- data/README.md
+- prompts/README.md
+- stage00_scaffold_report.log
+- stage00_scaffold_changes.diff
+
+Checks performed
+----------------
+- Created a local .venv with Python 3.12.2.
+- Installed the project in editable mode with development dependencies using:
+  .venv/bin/python -m pip install -e '.[dev]'
+  Result: ebolalens 0.0.0 and pytest 9.1.1 installed successfully.
+- Ran: .venv/bin/python -m pytest -q
+  Exact result:
+    ..                                                                       [100%]
+    2 passed in 0.11s
+- Ran: .venv/bin/python -m ebolalens --version
+  Exact result:
+    ebolalens 0.0.0
+- Ran: git diff --check
+  Result: completed successfully with no output.
+- Ran: git status --short
+  Result before creating the control artifacts:
+    ?? .gitignore
+    ?? README.md
+    ?? data/
+    ?? docs/
+    ?? prompts/
+    ?? pyproject.toml
+    ?? src/
+    ?? tests/
+- Reviewed every created source, configuration, test, and documentation file for
+  simplicity, consistency, and premature architecture.
+
+Assumptions and notes
+---------------------
+- The existing prompts/00_project_scaffold.md was retained unchanged.
+- The environment's Python 3.12.2 satisfies the Python 3.11+ requirement.
+- No runtime dependencies were added. Pytest is development-only.
+- No license was selected, and no epidemiological figures were included.
+- No Git staging, commit, push, or GitHub operation was performed.
+- The unified diff includes every project file currently untracked by Git except
+  the diff artifact itself, whose self-inclusion would be recursive.

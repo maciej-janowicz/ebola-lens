@@ -1,0 +1,392 @@
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..09a0c77
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,8 @@
++.venv/
++__pycache__/
++*.py[cod]
++*.egg-info/
++.pytest_cache/
++.coverage
++build/
++dist/
+diff --git a/README.md b/README.md
+new file mode 100644
+index 0000000..5d4cb47
+--- /dev/null
++++ b/README.md
+@@ -0,0 +1,40 @@
++# EbolaLens
++
++EbolaLens is a lightweight, reproducible tool for processing official reports about an ongoing Bundibugyo virus disease outbreak.
++
++> **Early-stage warning:** This project is at a very early stage. It is not an official information source and does not provide clinical advice.
++
++## Requirements
++
++- Python 3.11 or newer
++
++## Development setup
++
++Create and activate a virtual environment:
++
++```bash
++python3.11 -m venv .venv
++source .venv/bin/activate
++```
++
++Install the project in editable mode with development dependencies:
++
++```bash
++python -m pip install -e ".[dev]"
++```
++
++Run the tests:
++
++```bash
++pytest
++```
++
++Display the package version:
++
++```bash
++python -m ebolalens --version
++```
++
++See the [project charter](docs/project_charter.md) for the intended scope and operating principles.
++
++The licensing policy will be decided before the first public release.
+diff --git a/data/README.md b/data/README.md
+new file mode 100644
+index 0000000..042c407
+--- /dev/null
++++ b/data/README.md
+@@ -0,0 +1,3 @@
++# Data
++
++This directory will hold project data and related provenance records. No outbreak reports or extracted data are included at this stage.
+diff --git a/docs/project_charter.md b/docs/project_charter.md
+new file mode 100644
+index 0000000..e57a822
+--- /dev/null
++++ b/docs/project_charter.md
+@@ -0,0 +1,27 @@
++# EbolaLens project charter
++
++## Operational purpose
++
++EbolaLens will turn official outbreak reports into lightweight, reproducible situational-awareness outputs. Its first users are analysts supporting INSP, WHO, Africa CDC, and field organizations.
++
++The project will organize situational awareness around three areas:
++
++- epidemic evolution;
++- observation and reporting quality;
++- response-system pressure.
++
++## MVP-0 scope
++
++MVP-0 will:
++
++- register official reports;
++- preserve data provenance;
++- detect new and changed documents;
++- extract basic data;
++- validate totals;
++- maintain an explicit revision register;
++- publish lightweight static outputs.
++
++MVP-0 will not provide clinical recommendations, official forecasts, automated operational decisions, complex spatial models, or a heavy dashboard.
++
++The complete workflow must run on an ordinary laptop without HPC, paid cloud services, or a database server. Observed, corrected, and modeled data must remain clearly separated in storage, processing, and published outputs.
+diff --git a/prompts/00_project_scaffold.md b/prompts/00_project_scaffold.md
+new file mode 100644
+index 0000000..27d193d
+--- /dev/null
++++ b/prompts/00_project_scaffold.md
+@@ -0,0 +1,128 @@
++# Prompt 00 — minimalny szkielet projektu EbolaLens
++
++Pracujesz w pustym lokalnym repozytorium Git projektu **EbolaLens**.
++
++EbolaLens ma być lekkim, publicznym i w pełni reprodukowalnym narzędziem operacyjnym do przetwarzania oficjalnych raportów o trwającej epidemii choroby wywołanej wirusem Bundibugyo. Wersja podstawowa musi działać na zwykłym laptopie bez HPC, płatnej chmury, serwera bazodanowego i ciężkiego frontendu.
++
++Dewiza projektu:
++
++> Public quickly. Correct carefully. Revise transparently.
++
++## Cel tego etapu
++
++Utwórz wyłącznie minimalny, profesjonalny szkielet projektu. Nie pobieraj jeszcze raportów, nie implementuj parsera PDF, modeli epidemicznych, dashboardu ani GitHub Pages.
++
++## Wymagane pliki i katalogi
++
++Utwórz co najmniej:
++
++* `README.md`
++* `pyproject.toml`
++* `.gitignore`
++* `src/ebolalens/__init__.py`
++* `src/ebolalens/__main__.py`
++* `tests/test_smoke.py`
++* `docs/project_charter.md`
++* `data/README.md`
++* `prompts/README.md`
++
++Nie usuwaj ani nie modyfikuj tego promptu.
++
++## Zasady projektu
++
++1. Użyj układu `src`.
++
++2. Wymagaj Python 3.11 lub nowszego.
++
++3. Nie dodawaj zależności wykonawczych bez rzeczywistej potrzeby.
++
++4. `pytest` może być zależnością deweloperską.
++
++5. Dodaj minimalne polecenie:
++
++   ```bash
++   python -m ebolalens --version
++   ```
++
++6. Dodaj test sprawdzający import pakietu oraz działanie informacji o wersji.
++
++7. Początkowa wersja pakietu: `0.0.0`.
++
++8. Nie wybieraj jeszcze licencji. W `README.md` zaznacz krótko, że polityka licencyjna zostanie ustalona przed pierwszym publicznym wydaniem.
++
++9. Nie dodawaj CI, GitHub Actions, dokumentacji generowanej, Dockera, notebooków, dashboardu ani frameworka webowego.
++
++10. Nie wykonuj `git add`, `git commit`, `git push` ani operacji na GitHubie.
++
++11. Wszystkie pliki tekstowe mają być zapisane jako UTF-8.
++
++12. Kod i dokumentacja techniczna mają być po angielsku.
++
++## Treść karty projektu
++
++`docs/project_charter.md` powinien zwięźle określać:
++
++* cel operacyjny;
++* pierwszych użytkowników: analityków wspierających INSP, WHO, Africa CDC i organizacje terenowe;
++* trzy obszary obrazu sytuacji:
++
++  * epidemic evolution,
++  * observation and reporting quality,
++  * response-system pressure;
++* zakres MVP-0:
++
++  * rejestrowanie oficjalnych raportów,
++  * zachowanie pochodzenia danych,
++  * wykrywanie nowych i zmienionych dokumentów,
++  * ekstrakcja podstawowych danych,
++  * walidacja sum,
++  * jawny rejestr rewizji,
++  * publikacja lekkich wyników statycznych;
++* wyłączenia MVP-0:
++
++  * zalecenia kliniczne,
++  * oficjalne prognozy,
++  * automatyczne decyzje operacyjne,
++  * złożone modele przestrzenne,
++  * ciężki dashboard;
++* zasadę działania na zwykłym laptopie;
++* zasadę wyraźnego oddzielania danych obserwowanych, skorygowanych i modelowanych.
++
++## README
++
++`README.md` powinien być krótki i zawierać:
++
++* jednozdaniowy opis;
++* ostrzeżenie, że projekt jest na bardzo wczesnym etapie i nie stanowi oficjalnego źródła ani porady klinicznej;
++* wymagania;
++* instrukcję utworzenia środowiska wirtualnego;
++* instalację w trybie edytowalnym z zależnościami deweloperskimi;
++* uruchomienie testów;
++* uruchomienie polecenia wersji;
++* odsyłacz do karty projektu.
++
++Nie wpisuj niezweryfikowanych liczb epidemiologicznych.
++
++## Kontrola
++
++Po utworzeniu plików:
++
++1. utwórz lokalne środowisko `.venv`, jeśli nie istnieje;
++2. zainstaluj projekt w trybie edytowalnym z zależnościami deweloperskimi;
++3. uruchom testy;
++4. uruchom `python -m ebolalens --version`;
++5. sprawdź `git status --short`;
++6. przejrzyj wszystkie utworzone pliki pod kątem prostoty, spójności i braku przedwczesnej architektury.
++
++Jeżeli instalacja lub testy nie działają, napraw przyczynę i powtórz kontrolę.
++
++## Artefakty kontrolne
++
++Na końcu utwórz:
++
++* `stage00_scaffold_report.log` — zwięzły raport zawierający listę utworzonych plików, wykonane kontrole, dokładne wyniki testów oraz wszelkie założenia;
++* `stage00_scaffold_changes.diff` — czytelny unified diff obejmujący wszystkie nowe pliki, również nieśledzone.
++
++Nie umieszczaj sekretów, tokenów, danych uwierzytelniających ani pełnej zawartości środowiska w raporcie.
++
++Na końcu wyświetl krótkie podsumowanie, wynik testów i `git status --short`. Nie wykonuj commitu.
+diff --git a/prompts/README.md b/prompts/README.md
+new file mode 100644
+index 0000000..88df143
+--- /dev/null
++++ b/prompts/README.md
+@@ -0,0 +1,3 @@
++# Prompts
++
++This directory contains the staged instructions used to build EbolaLens reproducibly. Prompt files are retained unchanged as part of the project record.
+diff --git a/pyproject.toml b/pyproject.toml
+new file mode 100644
+index 0000000..8e24d8b
+--- /dev/null
++++ b/pyproject.toml
+@@ -0,0 +1,16 @@
++[build-system]
++requires = ["setuptools>=68"]
++build-backend = "setuptools.build_meta"
++
++[project]
++name = "ebolalens"
++version = "0.0.0"
++description = "A lightweight tool for processing official outbreak reports"
++readme = "README.md"
++requires-python = ">=3.11"
++
++[project.optional-dependencies]
++dev = ["pytest>=8"]
++
++[tool.pytest.ini_options]
++testpaths = ["tests"]
+diff --git a/src/ebolalens/__init__.py b/src/ebolalens/__init__.py
+new file mode 100644
+index 0000000..5e84d90
+--- /dev/null
++++ b/src/ebolalens/__init__.py
+@@ -0,0 +1,5 @@
++"""EbolaLens package."""
++
++__version__ = "0.0.0"
++
++__all__ = ["__version__"]
+diff --git a/src/ebolalens/__main__.py b/src/ebolalens/__main__.py
+new file mode 100644
+index 0000000..3bb4eeb
+--- /dev/null
++++ b/src/ebolalens/__main__.py
+@@ -0,0 +1,20 @@
++"""Command-line entry point for EbolaLens."""
++
++import argparse
++
++from ebolalens import __version__
++
++
++def main() -> None:
++    """Run the EbolaLens command-line interface."""
++    parser = argparse.ArgumentParser(prog="ebolalens")
++    parser.add_argument(
++        "--version",
++        action="version",
++        version=f"%(prog)s {__version__}",
++    )
++    parser.parse_args()
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/stage00_scaffold_report.log b/stage00_scaffold_report.log
+new file mode 100644
+index 0000000..2494a1e
+--- /dev/null
++++ b/stage00_scaffold_report.log
+@@ -0,0 +1,54 @@
++EbolaLens stage 00 scaffold report
++==================================
++
++Created files
++-------------
++- .gitignore
++- README.md
++- pyproject.toml
++- src/ebolalens/__init__.py
++- src/ebolalens/__main__.py
++- tests/test_smoke.py
++- docs/project_charter.md
++- data/README.md
++- prompts/README.md
++- stage00_scaffold_report.log
++- stage00_scaffold_changes.diff
++
++Checks performed
++----------------
++- Created a local .venv with Python 3.12.2.
++- Installed the project in editable mode with development dependencies using:
++  .venv/bin/python -m pip install -e '.[dev]'
++  Result: ebolalens 0.0.0 and pytest 9.1.1 installed successfully.
++- Ran: .venv/bin/python -m pytest -q
++  Exact result:
++    ..                                                                       [100%]
++    2 passed in 0.11s
++- Ran: .venv/bin/python -m ebolalens --version
++  Exact result:
++    ebolalens 0.0.0
++- Ran: git diff --check
++  Result: completed successfully with no output.
++- Ran: git status --short
++  Result before creating the control artifacts:
++    ?? .gitignore
++    ?? README.md
++    ?? data/
++    ?? docs/
++    ?? prompts/
++    ?? pyproject.toml
++    ?? src/
++    ?? tests/
++- Reviewed every created source, configuration, test, and documentation file for
++  simplicity, consistency, and premature architecture.
++
++Assumptions and notes
++---------------------
++- The existing prompts/00_project_scaffold.md was retained unchanged.
++- The environment's Python 3.12.2 satisfies the Python 3.11+ requirement.
++- No runtime dependencies were added. Pytest is development-only.
++- No license was selected, and no epidemiological figures were included.
++- No Git staging, commit, push, or GitHub operation was performed.
++- The unified diff includes every project file currently untracked by Git except
++  the diff artifact itself, whose self-inclusion would be recursive.
+diff --git a/tests/test_smoke.py b/tests/test_smoke.py
+new file mode 100644
+index 0000000..1d90423
+--- /dev/null
++++ b/tests/test_smoke.py
+@@ -0,0 +1,22 @@
++"""Smoke tests for the EbolaLens package."""
++
++import subprocess
++import sys
++
++import ebolalens
++
++
++def test_package_version() -> None:
++    assert ebolalens.__version__ == "0.0.0"
++
++
++def test_module_reports_version() -> None:
++    result = subprocess.run(
++        [sys.executable, "-m", "ebolalens", "--version"],
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++
++    assert result.stdout.strip() == "ebolalens 0.0.0"
++    assert result.stderr == ""
