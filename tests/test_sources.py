@@ -235,7 +235,7 @@ def test_changed_bytes_create_new_version() -> None:
 
     assert len(second["payloads"]) == 2
     assert len(second["documents"][0]["versions"]) == 2
-    assert second["documents"][0]["status"] == "new_version"
+    assert second["documents"][0]["status"] == "changed"
 
 
 def test_identical_bytes_at_second_url_are_alias() -> None:
@@ -251,7 +251,9 @@ def test_identical_bytes_at_second_url_are_alias() -> None:
 
     assert len(manifest["payloads"]) == 1
     assert manifest["payloads"][0]["observed_urls"] == [first_url, second_url]
-    assert manifest["documents"][1]["status"] == "alias"
+    assert manifest["documents"][1]["status"] == "new"
+    assert manifest["documents"][0]["all_urls"] == [first_url]
+    assert manifest["documents"][1]["all_urls"] == [second_url]
 
 
 def test_transport_failure_preserves_prior_state() -> None:
@@ -265,7 +267,7 @@ def test_transport_failure_preserves_prior_state() -> None:
     second = check_registry(config, first, failing_fetch, "2026-01-02T00:00:00Z")
     assert second["payloads"] == first["payloads"]
     assert second["documents"][0]["versions"] == first["documents"][0]["versions"]
-    assert second["documents"][0]["status"] == "error"
+    assert second["documents"][0]["status"] == "unavailable"
     assert second["documents"][0]["error"] == "timed out"
 
 
@@ -309,6 +311,100 @@ def test_offline_cli(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert "checked 7 registered URLs" in result.stdout
     assert len(json.loads(manifest.read_text(encoding="utf-8"))["payloads"]) == 3
+
+
+def test_document_origin_and_discovery_provenance() -> None:
+    seed_url = "https://example.test/seed.pdf"
+    discovered_url = "https://example.test/discovered.pdf"
+    config = config_for(("seed", seed_url), ("discovered", discovered_url))
+    config["documents"][0]["origin"] = "seed"
+    config["documents"][1].update(
+        origin="discovery", discovered_from="feed", discovery_method="rss"
+    )
+    manifest = check_registry(
+        config,
+        None,
+        fixed_fetch({seed_url: b"seed", discovered_url: b"discovered"}),
+        "2026-01-01T00:00:00Z",
+    )
+
+    assert manifest["documents"][0]["origin"] == "discovery"
+    assert manifest["documents"][0]["discovered_from"] == "feed"
+    assert manifest["documents"][1]["origin"] == "seed"
+    assert manifest["documents"][1]["discovered_from"] is None
+
+
+def test_manifest_order_and_serialization_are_deterministic(tmp_path: Path) -> None:
+    first_url = "https://example.test/z.pdf"
+    second_url = "https://example.test/a.pdf"
+    config = config_for(("z-document", first_url), ("a-document", second_url))
+    fetch = fixed_fetch({first_url: b"z", second_url: b"a"})
+    first = check_registry(config, None, fetch, "2026-01-01T00:00:00Z")
+    config["documents"].reverse()
+    second = check_registry(config, None, fetch, "2026-01-01T00:00:00Z")
+    first_path = tmp_path / "first.json"
+    second_path = tmp_path / "second.json"
+    write_manifest_atomic(first_path, first)
+    write_manifest_atomic(second_path, second)
+
+    assert [item["id"] for item in first["documents"]] == ["a-document", "z-document"]
+    assert first_path.read_bytes() == second_path.read_bytes()
+
+
+def test_offline_fixture_has_one_candidate_and_three_seed_payloads(tmp_path: Path) -> None:
+    config_path = Path("data/sources.json")
+    config = load_config(config_path)
+    from ebolalens.sources import OFFLINE_TIMESTAMP, offline_transport
+
+    manifest = check_registry(
+        config, None, offline_transport(config, config_path), OFFLINE_TIMESTAMP
+    )
+
+    assert len(manifest["candidates"]) == 1
+    assert len(manifest["payloads"]) == 3
+    assert {item["origin"] for item in manifest["documents"]} == {"seed"}
+    assert all(item["present_in_current_response"] for item in manifest["candidates"])
+
+
+def test_documents_list_table_and_json_are_offline(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    config = config_for(("document-1", "https://example.test/report.pdf"))
+    manifest = check_registry(
+        config,
+        None,
+        fixed_fetch({"https://example.test/report.pdf": b"report"}),
+        "2026-01-01T00:00:00Z",
+    )
+    write_manifest_atomic(manifest_path, manifest)
+
+    table = subprocess.run(
+        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path)],
+        check=False, capture_output=True, text=True,
+    )
+    machine = subprocess.run(
+        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path), "--json"],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert table.returncode == 0
+    assert "document-1" in table.stdout
+    assert json.loads(machine.stdout)[0]["id"] == "document-1"
+
+
+@pytest.mark.parametrize("contents", [None, "not json"])
+def test_documents_list_rejects_missing_or_broken_manifest(
+    tmp_path: Path, contents: str | None
+) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    if contents is not None:
+        manifest_path.write_text(contents, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path)],
+        check=False, capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "manifest" in result.stderr.lower()
 
 
 def test_cli_uses_isolated_default_manifests_without_network(

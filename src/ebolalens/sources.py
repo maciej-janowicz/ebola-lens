@@ -91,6 +91,8 @@ def load_config(path: Path) -> dict[str, Any]:
                 required_nullable = {"aliases", "report_number", "reporting_date", "publication_date"}
                 if not required_nullable <= entry.keys() or not isinstance(entry["aliases"], list):
                     raise ConfigurationError(f"invalid document metadata: {entry['id']}")
+                if entry.get("origin", "seed") not in {"seed", "discovery"}:
+                    raise ConfigurationError(f"invalid document origin: {entry['id']}")
     return config
 
 
@@ -324,10 +326,18 @@ def check_registry(
             source_type=entry["source_type"],
             canonical_url=entry["canonical_url"],
             aliases=sorted(set(entry["aliases"])),
+            all_urls=sorted({
+                entry["canonical_url"],
+                *entry["aliases"],
+                *(previous.get("all_urls", []) if previous else []),
+            }),
+            title=entry.get("title"),
             report_number=entry["report_number"],
             reporting_date=entry["reporting_date"],
             publication_date=entry["publication_date"],
             discovery_method=entry["discovery_method"],
+            discovered_from=entry.get("discovered_from"),
+            origin=entry.get("origin", "seed"),
             last_checked=checked_at,
             status="error",
             error=None,
@@ -342,6 +352,7 @@ def check_registry(
                 etag=result.etag,
                 last_modified=result.last_modified,
             )
+            record["all_urls"] = sorted({*record["all_urls"], result.resolved_url})
             if result.status == 304 and record["versions"]:
                 record["status"] = "unchanged"
             elif 200 <= result.status < 300:
@@ -357,7 +368,9 @@ def check_registry(
                 if payload:
                     payload["observed_urls"] = sorted(set(payload["observed_urls"]) | set(observed))
                     payload["last_checked"] = checked_at
-                    record["status"] = "unchanged" if version_id in record["versions"] else "alias"
+                    record["status"] = "unchanged" if version_id in record["versions"] else (
+                        "changed" if record["versions"] else "new"
+                    )
                 else:
                     payload = {
                         "version_id": version_id,
@@ -373,18 +386,22 @@ def check_registry(
                         "last_modified": result.last_modified,
                     }
                     manifest["payloads"].append(payload)
-                    record["status"] = "new_version"
+                    record["status"] = "changed" if record["versions"] else "new"
                 if version_id not in record["versions"]:
                     record["versions"].append(version_id)
                 record["byte_length"] = len(result.body)
                 record["sha256"] = digest
             else:
-                record["status"] = "http_error"
+                record["status"] = "unavailable"
                 record["error"] = f"HTTP {result.status}"
         except (TransportError, ValueError) as exc:
+            record["status"] = "unavailable"
             record["error"] = str(exc)
         manifest["documents"].append(record)
 
+    manifest["source_pages"].sort(key=lambda item: item["id"])
+    manifest["discovery_endpoints"].sort(key=lambda item: item["id"])
+    manifest["documents"].sort(key=lambda item: item["id"])
     manifest["payloads"].sort(key=lambda item: item["version_id"])
     manifest["candidates"].sort(key=lambda item: item["url"])
     return manifest

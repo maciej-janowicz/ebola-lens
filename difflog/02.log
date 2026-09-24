@@ -1,0 +1,30 @@
+Prompt 02 — raport wykonania
+Data: 2026-09-24
+
+Zakres
+- Przeprowadzono audyt istniejącego rejestru źródeł, manifestów, kodu CLI i testów.
+- Potwierdzono, że wynik „1 candidate / 3 payloads” jest logicznie poprawny:
+  jeden kandydat pochodzi z fixture RSS, a trzy payloady z trzech jawnych dokumentów seed.
+
+Wykonane zmiany
+- Dodano kanoniczne pola dokumentu: `all_urls`, `title`, `origin` i `discovered_from`.
+- Zachowano stabilną tożsamość logicznego dokumentu niezależną od SHA-256 payloadu.
+- Deduplikacja payloadów odbywa się po SHA-256 surowych bajtów; wszystkie znane URL-e są zachowywane.
+- Uporządkowano statusy dokumentów do: `new`, `unchanged`, `changed`, `unavailable`.
+- Dodano deterministyczne sortowanie rekordów i serializacji manifestu.
+- Dodano offline’owe polecenie `documents list` oraz wariant `--json`.
+- Dodano testy deduplikacji, zmian treści, pochodzenia, deterministyczności, CLI i błędnych manifestów.
+- Zaktualizowano README, dokumentację danych i opis dochodzenia źródłowego.
+
+Weryfikacja
+- `.venv/bin/python -m pytest` — 23 testy zaliczone.
+- `.venv/bin/python -m ebolalens sources check --offline` — 7 URL-i, 1 kandydat, 3 payloady.
+- `documents list` — tabela trzech rekordów działa bez sieci.
+- `documents list --json` — poprawne maszynowo czytelne JSON.
+- `git diff --check` — brak błędów białych znaków.
+
+Ograniczenia
+- Identyczny payload nie dowodzi identyczności logicznych dokumentów.
+- Różny SHA-256 może oznaczać wyłącznie techniczne przepakowanie PDF/HTML.
+- Kandydaci z discovery nadal wymagają ręcznej rejestracji przed pobraniem.
+- Nie wykonano testu live; testy etapu pozostają całkowicie niezależne od sieci.

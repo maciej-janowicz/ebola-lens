@@ -51,6 +51,7 @@
       "reporting_date": null,
       "publication_date": null,
       "discovery_method": "confirmed_seed_url",
+      "origin": "seed",
       "offline_fixture": "fixtures/insp-seed-1.pdf",
       "offline_media_type": "application/pdf"
     },
@@ -64,6 +65,7 @@
       "reporting_date": null,
       "publication_date": null,
       "discovery_method": "confirmed_seed_url",
+      "origin": "seed",
       "offline_fixture": "fixtures/insp-seed-55.pdf",
       "offline_media_type": "application/pdf"
     },
@@ -77,6 +79,7 @@
       "reporting_date": null,
       "publication_date": null,
       "discovery_method": "confirmed_seed_url",
+      "origin": "seed",
       "offline_fixture": "fixtures/insp-seed-68.pdf",
       "offline_media_type": "application/pdf"
     }

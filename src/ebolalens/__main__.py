@@ -1,6 +1,7 @@
 """Command-line entry point for EbolaLens."""
 
 import argparse
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -57,6 +58,51 @@ def _check_sources(config_path: Path, manifest_path: Path, live: bool) -> int:
     return 0
 
 
+def _document_rows(manifest: dict) -> list[dict]:
+    """Return canonical document records in stable order."""
+    documents = manifest.get("documents")
+    payloads = manifest.get("payloads")
+    if not isinstance(documents, list) or not isinstance(payloads, list):
+        raise ConfigurationError("manifest must contain documents and payloads lists")
+    if not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in documents):
+        raise ConfigurationError("manifest contains an invalid document record")
+    return sorted(documents, key=lambda item: item["id"])
+
+
+def _list_documents(manifest_path: Path, as_json: bool) -> int:
+    """Display an existing manifest without performing retrieval."""
+    manifest = load_manifest(manifest_path)
+    if manifest is None:
+        raise ConfigurationError(f"manifest does not exist: {manifest_path}")
+    documents = _document_rows(manifest)
+    if as_json:
+        print(json.dumps(documents, indent=2, sort_keys=True))
+        return 0
+
+    headings = ("ID", "DATE", "TITLE / NAME", "URLS", "STATUS", "SHA-256")
+    rows = []
+    for document in documents:
+        date = document.get("reporting_date") or document.get("publication_date") or "-"
+        title = document.get("title") or document["id"]
+        urls = document.get("all_urls") or [
+            document.get("canonical_url"), *document.get("aliases", [])
+        ]
+        rows.append((
+            document["id"],
+            date,
+            str(title)[:32],
+            str(len({url for url in urls if url})),
+            str(document.get("status") or "-"),
+            str(document.get("sha256") or "-")[:12],
+        ))
+    widths = [max(len(headings[i]), *(len(row[i]) for row in rows)) for i in range(len(headings))]
+    print("  ".join(value.ljust(widths[i]) for i, value in enumerate(headings)))
+    print("  ".join("-" * width for width in widths))
+    for row in rows:
+        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
+    return 0
+
+
 def main() -> int:
     """Run the EbolaLens command-line interface."""
     parser = argparse.ArgumentParser(prog="ebolalens")
@@ -79,6 +125,16 @@ def main() -> int:
     check_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
     check_parser.add_argument("--manifest", type=Path)
 
+    documents_parser = subparsers.add_parser("documents", help="inspect canonical documents")
+    documents_subparsers = documents_parser.add_subparsers(
+        dest="documents_command", required=True
+    )
+    documents_list_parser = documents_subparsers.add_parser(
+        "list", help="list documents from an existing manifest"
+    )
+    documents_list_parser.add_argument("--manifest", type=Path, required=True)
+    documents_list_parser.add_argument("--json", action="store_true", help="emit JSON")
+
     args = parser.parse_args()
     try:
         if args.command == "sources" and args.sources_command == "list":
@@ -89,6 +145,8 @@ def main() -> int:
                 _manifest_path(args.manifest, args.live),
                 args.live,
             )
+        if args.command == "documents" and args.documents_command == "list":
+            return _list_documents(args.manifest, args.json)
     except (ConfigurationError, OSError) as exc:
         parser.error(str(exc))
     parser.print_help()

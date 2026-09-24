@@ -1,0 +1,62 @@
+Prompt 02 — canonical document registry
+Date: 2026-09-24
+
+Initial state
+- `git status --short` contained only the untracked instruction file:
+  `?? prompts/prompt_02_document_registry.md`.
+- Work initially stopped as required. The user explicitly accepted that file as an
+  exception and authorized continuation. It was not modified.
+
+Audit result: 1 candidate / 3 payloads
+- A registered URL is a maintained source-page, discovery-endpoint, or document URL.
+- A candidate is an exact URL extracted from a supported discovery response. The
+  fixture RSS contains one such URL, and it is present in the current feed.
+- Candidates are not automatically retrieved or registered as documents.
+- A document payload is a raw retrieved byte sequence; unique payloads are counted
+  by SHA-256 across registered document versions.
+- The three unique fixture payloads belong to the three explicit seed documents.
+  Therefore one candidate and three unique payloads are independent, correct counts.
+
+Changed files
+- README.md
+- data/README.md
+- data/sources.json
+- docs/source_investigation.md
+- src/ebolalens/__main__.py
+- src/ebolalens/sources.py
+- tests/test_sources.py
+- prompt_02_document_registry.diff (generated artifact)
+- prompt_02_document_registry.log (this artifact)
+
+Design decisions
+- Kept schema version 1 and the existing logical-document / payload-version split.
+- Logical identity remains the reviewed stable document ID.
+- Raw payloads remain globally deduplicated by SHA-256 and retain sorted observed URLs.
+- Added deterministic `all_urls`, nullable `title` and `discovered_from`, and explicit
+  `origin` (`seed` or `discovery`) to document records.
+- Normalized document statuses to `new`, `unchanged`, `changed`, and `unavailable`.
+- Added an offline-only `documents list --manifest PATH` command with compact table
+  output and standard-library JSON output through `--json`.
+- Sorted all manifest record collections with stable keys before serialization.
+
+Verification commands and results
+- `.venv/bin/python -m pytest`
+  Result: PASS, 23 passed in 0.85s.
+- `.venv/bin/python -m ebolalens sources check --offline`
+  Result: PASS; 7 registered URLs, 1 known/current candidate, 0 newly discovered,
+  and 3 unique document payloads.
+- `.venv/bin/python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json`
+  Result: PASS; three stable rows, each with ID, date placeholder, name, URL count,
+  unchanged status, and abbreviated SHA-256.
+- `.venv/bin/python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json --json`
+  Result: PASS; three complete, deterministically ordered JSON document records.
+- `git diff --check`
+  Result: PASS; no whitespace errors.
+
+Known limitations and follow-up
+- Byte equality is not proof that URLs represent one logical publication.
+- A changed hash can reflect technical PDF/HTML packaging rather than content change.
+- Discovery candidates still require human review and registration before retrieval.
+- Existing metadata intentionally remains null where it cannot be established reliably.
+- No live/network check was run; it was not required by this stage's verification and
+  all tests remain network-independent.

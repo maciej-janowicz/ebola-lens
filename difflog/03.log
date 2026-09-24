@@ -1,0 +1,39 @@
+EbolaLens prompt 03 — PDF exploration tools
+Date: 2026-09-24
+
+Created files
+- data/fixtures/exploration-sample.pdf
+- docs/pdf_library_decision.md
+- src/ebolalens/exploration/__init__.py
+- src/ebolalens/exploration/pdf_inspect.py
+- src/ebolalens/exploration/compare_libs.py
+- tests/test_exploration.py
+- difflog/03.diff
+- difflog/03.log
+
+Modified files
+- pyproject.toml
+
+Summary
+- pdf_inspect.py uses optional pypdf to report the page count, author and title,
+  then writes text extracted from the first page to a deterministic output path.
+  Missing files, missing pypdf and malformed PDFs are reported without traceback.
+- compare_libs.py compares pypdf, pdfplumber and pymupdf (imported as fitz),
+  records elapsed time, extracted-text length, status and errors, and writes JSON.
+  A missing or failing backend does not stop the remaining comparisons.
+- The default input is a small synthetic local PDF fixture. No report was
+  downloaded and no network access is needed by the tools or tests.
+- pyproject.toml keeps runtime dependencies empty and exposes all three PDF
+  libraries through the optional exploration dependency group.
+
+Verification
+- .venv/bin/python -m pytest tests/test_exploration.py -v
+  Result: 3 passed in 0.02s.
+- .venv/bin/python -m pytest -q
+  Result: 26 passed in 0.53s.
+- compare_libs.py completed with all three backends marked missing in the current
+  environment, as designed.
+- pdf_inspect.py reported the missing optional pypdf dependency cleanly.
+- pyproject.toml parsed successfully with Python's tomllib.
+
+Git operations (add, commit, push) are intentionally omitted from this output and must be performed manually after review.

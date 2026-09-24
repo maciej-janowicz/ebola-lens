@@ -1,0 +1,421 @@
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -11,6 +11,11 @@
+ 
+ [project.optional-dependencies]
+ dev = ["pytest>=8"]
++exploration = [
++    "pdfplumber>=0.10.0",
++    "pypdf>=3.0.0",
++    "pymupdf>=1.23.0",
++]
+ 
+ [tool.pytest.ini_options]
+ testpaths = ["tests"]
+--- /dev/null
++++ b/data/fixtures/exploration-sample.pdf
+@@ -0,0 +1,37 @@
++%PDF-1.4
++% Synthetic EbolaLens fixture; no real epidemiological data.
++1 0 obj
++<< /Type /Catalog /Pages 2 0 R >>
++endobj
++2 0 obj
++<< /Type /Pages /Kids [3 0 R] /Count 1 >>
++endobj
++3 0 obj
++<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
++endobj
++4 0 obj
++<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
++endobj
++5 0 obj
++<< /Length 54 >>
++stream
++BT /F1 12 Tf 36 96 Td (Synthetic EbolaLens PDF) Tj ET
++endstream
++endobj
++6 0 obj
++<< /Title (Synthetic report) /Author (EbolaLens tests) >>
++endobj
++xref
++0 7
++0000000000 65535 f 
++0000000070 00000 n 
++0000000119 00000 n 
++0000000176 00000 n 
++0000000302 00000 n 
++0000000372 00000 n 
++0000000475 00000 n 
++trailer
++<< /Size 7 /Root 1 0 R /Info 6 0 R >>
++startxref
++548
++%%EOF
+--- /dev/null
++++ b/src/ebolalens/exploration/__init__.py
+@@ -0,0 +1,2 @@
++"""Optional tools for inspecting local outbreak-report files."""
++
+--- /dev/null
++++ b/src/ebolalens/exploration/pdf_inspect.py
+@@ -0,0 +1,85 @@
++"""Inspect one local PDF with the optional pypdf dependency."""
++
++from __future__ import annotations
++
++import argparse
++import sys
++from pathlib import Path
++from typing import Any
++
++PROJECT_ROOT = Path(__file__).resolve().parents[3]
++DEFAULT_PDF = PROJECT_ROOT / "data" / "fixtures" / "exploration-sample.pdf"
++DEFAULT_OUTPUT = (
++    PROJECT_ROOT / "data" / "generated" / "pdf_exploration" / "inspect_output.txt"
++)
++
++
++class InspectionError(RuntimeError):
++    """Raised when a PDF cannot be inspected safely."""
++
++
++def _metadata_value(metadata: Any, key: str) -> str | None:
++    """Return a normalized metadata value from pypdf's mapping-like object."""
++    if metadata is None:
++        return None
++    value = metadata.get(key)
++    return str(value).strip() if value else None
++
++
++def inspect_pdf(path: Path) -> tuple[dict[str, str | int | None], str]:
++    """Return basic metadata and first-page text from a local PDF."""
++    if not path.is_file():
++        raise InspectionError(f"PDF file does not exist: {path}")
++    try:
++        from pypdf import PdfReader
++    except ImportError as exc:
++        raise InspectionError(
++            'pypdf is not installed; install the optional group with pip install -e ".[exploration]"'
++        ) from exc
++
++    try:
++        reader = PdfReader(path)
++        metadata = reader.metadata
++        page_count = len(reader.pages)
++        first_page_text = reader.pages[0].extract_text() if page_count else ""
++    except Exception as exc:  # library exception types differ between releases
++        raise InspectionError(f"cannot read PDF {path}: {exc}") from exc
++
++    details: dict[str, str | int | None] = {
++        "pages": page_count,
++        "author": _metadata_value(metadata, "/Author"),
++        "title": _metadata_value(metadata, "/Title"),
++    }
++    return details, first_page_text or ""
++
++
++def write_text_output(path: Path, text: str) -> None:
++    """Write extracted text to the deterministic exploration location."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(text, encoding="utf-8")
++
++
++def main(argv: list[str] | None = None) -> int:
++    """Run the PDF inspection command."""
++    parser = argparse.ArgumentParser(description="Inspect a local PDF report")
++    parser.add_argument("pdf", nargs="?", type=Path, default=DEFAULT_PDF)
++    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
++    args = parser.parse_args(argv)
++
++    try:
++        details, text = inspect_pdf(args.pdf)
++        write_text_output(args.output, text)
++    except (InspectionError, OSError) as exc:
++        print(f"pdf inspection failed: {exc}", file=sys.stderr)
++        return 1
++
++    print(f"PDF: {args.pdf}")
++    print(f"Pages: {details['pages']}")
++    print(f"Author: {details['author'] or '-'}")
++    print(f"Title: {details['title'] or '-'}")
++    print(f"First-page text: {args.output}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/src/ebolalens/exploration/compare_libs.py
+@@ -0,0 +1,104 @@
++"""Compare optional PDF text extractors on one local file."""
++
++from __future__ import annotations
++
++import argparse
++import importlib
++import json
++import sys
++import time
++from pathlib import Path
++from typing import Callable
++
++PROJECT_ROOT = Path(__file__).resolve().parents[3]
++DEFAULT_PDF = PROJECT_ROOT / "data" / "fixtures" / "exploration-sample.pdf"
++DEFAULT_OUTPUT = (
++    PROJECT_ROOT / "data" / "generated" / "pdf_exploration" / "comparison_results.json"
++)
++
++
++def _pypdf_text(path: Path) -> str:
++    module = importlib.import_module("pypdf")
++    reader = module.PdfReader(path)
++    return "\n".join(page.extract_text() or "" for page in reader.pages)
++
++
++def _pdfplumber_text(path: Path) -> str:
++    module = importlib.import_module("pdfplumber")
++    with module.open(path) as document:
++        return "\n".join(page.extract_text() or "" for page in document.pages)
++
++
++def _pymupdf_text(path: Path) -> str:
++    module = importlib.import_module("fitz")
++    with module.open(path) as document:
++        return "\n".join(page.get_text() or "" for page in document)
++
++
++EXTRACTORS: tuple[tuple[str, str, Callable[[Path], str]], ...] = (
++    ("pypdf", "pypdf", _pypdf_text),
++    ("pdfplumber", "pdfplumber", _pdfplumber_text),
++    ("pymupdf", "fitz", _pymupdf_text),
++)
++
++
++def compare(path: Path) -> dict[str, object]:
++    """Run every available extractor and retain independent results."""
++    results: dict[str, object] = {"input": str(path), "libraries": {}}
++    libraries = results["libraries"]
++    assert isinstance(libraries, dict)
++    for label, import_name, extractor in EXTRACTORS:
++        started = time.perf_counter()
++        try:
++            importlib.import_module(import_name)
++            text = extractor(path)
++        except ImportError as exc:
++            libraries[label] = {
++                "status": "missing",
++                "elapsed_seconds": round(time.perf_counter() - started, 6),
++                "text_length": 0,
++                "error": str(exc),
++            }
++        except Exception as exc:  # keep one backend failure from stopping the comparison
++            libraries[label] = {
++                "status": "error",
++                "elapsed_seconds": round(time.perf_counter() - started, 6),
++                "text_length": 0,
++                "error": str(exc),
++            }
++        else:
++            libraries[label] = {
++                "status": "ok",
++                "elapsed_seconds": round(time.perf_counter() - started, 6),
++                "text_length": len(text),
++                "error": None,
++            }
++    return results
++
++
++def write_results(path: Path, results: dict[str, object]) -> None:
++    """Write stable, human-readable JSON results."""
++    path.parent.mkdir(parents=True, exist_ok=True)
++    path.write_text(json.dumps(results, indent=2, sort_keys=True) + "\n", encoding="utf-8")
++
++
++def main(argv: list[str] | None = None) -> int:
++    """Run the comparison without requiring every optional dependency."""
++    parser = argparse.ArgumentParser(description="Compare PDF text extraction libraries")
++    parser.add_argument("pdf", nargs="?", type=Path, default=DEFAULT_PDF)
++    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
++    args = parser.parse_args(argv)
++    if not args.pdf.is_file():
++        print(f"PDF file does not exist: {args.pdf}", file=sys.stderr)
++        return 1
++    try:
++        write_results(args.output, compare(args.pdf))
++    except OSError as exc:
++        print(f"cannot write comparison results: {exc}", file=sys.stderr)
++        return 1
++    print(f"Comparison results: {args.output}")
++    return 0
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- /dev/null
++++ b/docs/pdf_library_decision.md
+@@ -0,0 +1,49 @@
++# Wybór biblioteki do ekstrakcji PDF
++
++## Cel
++
++Celem eksploracji jest wybór lekkiej i niezawodnej biblioteki do ekstrakcji
++tekstu i tabel z raportów INSP i WHO. Decyzja produkcyjna powinna opierać się na
++reprezentatywnej, lokalnej próbce raportów, bez dodawania pobranych PDF-ów do Git.
++
++## Kryteria
++
++- lekkość zależności i zużycie zasobów na zwykłym laptopie;
++- łatwa, powtarzalna instalacja, najlepiej z gotowych wheelów i bez lokalnej
++  kompilacji rozszerzeń C;
++- jakość tekstu: kolejność czytania, znaki diakrytyczne, nagłówki i kolumny;
++- jakość tabel i możliwość zachowania ich struktury;
++- aktywność projektu, dokumentacja i stabilność API;
++- licencja zgodna z przyszłą licencją i sposobem dystrybucji EbolaLens.
++
++## Wstępna analiza
++
++| Biblioteka | Mocne strony | Koszty i ryzyka | Wstępna rola |
++| --- | --- | --- | --- |
++| `pypdf` | Czysty Python, prosta instalacja, metadane i podstawowy tekst | Ograniczona rekonstrukcja tabel i złożonego układu | Lekki punkt odniesienia i inspekcja |
++| `pdfplumber` | Dostęp do geometrii znaków, słów i tabel; wygodne API eksploracyjne | Więcej zależności i wolniejsze przetwarzanie | Kandydat do ekstrakcji tabel |
++| `pymupdf` (`fitz`) | Zwykle szybka ekstrakcja tekstu i renderowanie stron | Natywne binaria; należy osobno zatwierdzić konsekwencje licencji | Kandydat do szybkiej ekstrakcji tekstu |
++
++To są hipotezy oparte na ogólnej charakterystyce bibliotek, nie wynik benchmarku
++EbolaLens. Licencje i warunki dystrybucji trzeba zweryfikować ponownie względem
++konkretnych wersji przed decyzją produkcyjną.
++
++## Wyniki lokalnego porównania
++
++Uruchom:
++
++```bash
++python -m ebolalens.exploration.compare_libs /ścieżka/do/raportu.pdf
++```
++
++Następnie wklej lub podsumuj tutaj zawartość
++`data/generated/pdf_exploration/comparison_results.json`, wraz z informacją o
++systemie, wersji Pythona, wersjach bibliotek i rodzaju badanego raportu.
++
++<!-- Miejsce na wyniki comparison_results.json. -->
++
++## Decyzja
++
++Do uzupełnienia po testach na kilku reprezentatywnych raportach INSP i WHO.
++Należy osobno wskazać bibliotekę podstawową, ewentualny fallback oraz uzasadnić,
++czy obsługa tabel wymaga innego backendu niż ekstrakcja zwykłego tekstu.
+--- /dev/null
++++ b/tests/test_exploration.py
+@@ -0,0 +1,69 @@
++"""Network-free tests for the optional PDF exploration commands."""
++
++from __future__ import annotations
++
++import json
++import sys
++import types
++from pathlib import Path
++
++from ebolalens.exploration import compare_libs, pdf_inspect
++
++
++class FakePage:
++    def extract_text(self) -> str:
++        return "Synthetic EbolaLens PDF"
++
++
++class FakeReader:
++    def __init__(self, path: Path) -> None:
++        assert path.read_bytes().startswith(b"%PDF-")
++        self.pages = [FakePage()]
++        self.metadata = {"/Author": "EbolaLens tests", "/Title": "Synthetic report"}
++
++
++def test_pdf_inspect_writes_first_page_text(
++    tmp_path: Path, monkeypatch, capsys
++) -> None:
++    monkeypatch.setitem(sys.modules, "pypdf", types.SimpleNamespace(PdfReader=FakeReader))
++    output = tmp_path / "inspect.txt"
++
++    result = pdf_inspect.main([str(pdf_inspect.DEFAULT_PDF), "--output", str(output)])
++
++    assert result == 0
++    assert output.read_text(encoding="utf-8") == "Synthetic EbolaLens PDF"
++    stdout = capsys.readouterr().out
++    assert "Pages: 1" in stdout
++    assert "Author: EbolaLens tests" in stdout
++
++
++def test_pdf_inspect_handles_missing_file(tmp_path: Path, capsys) -> None:
++    result = pdf_inspect.main([str(tmp_path / "missing.pdf")])
++
++    assert result == 1
++    assert "does not exist" in capsys.readouterr().err
++
++
++def test_compare_libs_records_results_when_dependencies_are_missing(
++    tmp_path: Path, monkeypatch
++) -> None:
++    real_import = compare_libs.importlib.import_module
++
++    def controlled_import(name: str):
++        if name == "pypdf":
++            return types.SimpleNamespace(PdfReader=FakeReader)
++        raise ImportError(f"optional test dependency missing: {name}")
++
++    monkeypatch.setattr(compare_libs.importlib, "import_module", controlled_import)
++    output = tmp_path / "comparison.json"
++    result = compare_libs.main(
++        [str(compare_libs.DEFAULT_PDF), "--output", str(output)]
++    )
++    monkeypatch.setattr(compare_libs.importlib, "import_module", real_import)
++
++    assert result == 0
++    payload = json.loads(output.read_text(encoding="utf-8"))
++    assert payload["libraries"]["pypdf"]["status"] == "ok"
++    assert payload["libraries"]["pypdf"]["text_length"] > 0
++    assert payload["libraries"]["pdfplumber"]["status"] == "missing"
++    assert payload["libraries"]["pymupdf"]["status"] == "missing"
+--- /dev/null
++++ b/difflog/03.log
+@@ -0,0 +1,39 @@
++EbolaLens prompt 03 — PDF exploration tools
++Date: 2026-09-24
++
++Created files
++- data/fixtures/exploration-sample.pdf
++- docs/pdf_library_decision.md
++- src/ebolalens/exploration/__init__.py
++- src/ebolalens/exploration/pdf_inspect.py
++- src/ebolalens/exploration/compare_libs.py
++- tests/test_exploration.py
++- difflog/03.diff
++- difflog/03.log
++
++Modified files
++- pyproject.toml
++
++Summary
++- pdf_inspect.py uses optional pypdf to report the page count, author and title,
++  then writes text extracted from the first page to a deterministic output path.
++  Missing files, missing pypdf and malformed PDFs are reported without traceback.
++- compare_libs.py compares pypdf, pdfplumber and pymupdf (imported as fitz),
++  records elapsed time, extracted-text length, status and errors, and writes JSON.
++  A missing or failing backend does not stop the remaining comparisons.
++- The default input is a small synthetic local PDF fixture. No report was
++  downloaded and no network access is needed by the tools or tests.
++- pyproject.toml keeps runtime dependencies empty and exposes all three PDF
++  libraries through the optional exploration dependency group.
++
++Verification
++- .venv/bin/python -m pytest tests/test_exploration.py -v
++  Result: 3 passed in 0.02s.
++- .venv/bin/python -m pytest -q
++  Result: 26 passed in 0.53s.
++- compare_libs.py completed with all three backends marked missing in the current
++  environment, as designed.
++- pdf_inspect.py reported the missing optional pypdf dependency cleanly.
++- pyproject.toml parsed successfully with Python's tomllib.
++
++Git operations (add, commit, push) are intentionally omitted from this output and must be performed manually after review.
+

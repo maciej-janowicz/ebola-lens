@@ -1,0 +1,394 @@
+diff --git a/README.md b/README.md
+index 55019e1..0d5c049 100644
+--- a/README.md
++++ b/README.md
+@@ -41,14 +41,20 @@ List and check official sources:
+ python -m ebolalens sources list
+ python -m ebolalens sources check --offline
+ python -m ebolalens sources check --live
++python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json
++python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json --json
+ ```
+ 
+ The offline command is deterministic and uses small synthetic fixtures. It writes `data/generated/offline_source_manifest.json` by default. The live command performs bounded, sequential HTTP checks and records per-source failures without discarding successful results; its default state is `data/generated/source_manifest.json`. Use `--manifest PATH` to override either default. Keeping these paths separate prevents synthetic fixture state from entering operational history.
+ 
+ Maintained registrations live in `data/sources.json`; generated manifests are written atomically and are not committed. Discovery finds candidate official URLs, registration records reviewed URLs, and checking detects byte-level versions. Candidate history is cumulative: manifests record first and last observation, current-feed presence, and newly seen URLs even when older candidates disappear from a later successful feed. Discovery failures preserve the last successful candidate state.
+ 
++The document command only reads an existing manifest and never accesses the network. Its default output is a compact table; `--json` emits complete canonical document records in a stable order. A missing or malformed manifest is reported as a command-line error.
++
+ Epidemiological extraction is a separate future stage. Current automatic discovery is limited to the confirmed INSP SitRep RSS feed; it is not a claim of complete coverage. Candidates are never fetched or registered automatically and require human review. A successful HTTP check confirms availability and payload identity only—it does not validate epidemiological contents.
+ 
+ See the [project charter](docs/project_charter.md) for the intended scope and operating principles.
+ 
++EbolaLens supports research and auditing of public epidemiological data. It must not be used for clinical decisions or independent outbreak management.
++
+ The licensing policy will be decided before the first public release.
+diff --git a/data/README.md b/data/README.md
+index d4d9c67..ab0999a 100644
+--- a/data/README.md
++++ b/data/README.md
+@@ -9,3 +9,20 @@ Checks atomically write generated state. Live checks default to `generated/sourc
+ The manifest's cumulative `candidates` registry identifies candidates by exact URL and retains their publisher, discovery endpoint, first-seen and last-seen timestamps, and current-feed presence. A successful later feed can mark an older candidate absent without deleting it. A failed retrieval or parse preserves the last successful presence state. Newly observed candidate URLs are printed for human review; they are not automatically downloaded or registered.
+ 
+ Current discovery is limited to the confirmed official INSP SitRep RSS feed and may be incomplete. If the feed misses a document, add its official URL and explicitly known metadata to `sources.json`; never guess a filename or replace prior history. Candidate status and successful HTTP retrieval do not validate epidemiological content.
++
++## Canonical document registry
++
++A registered source or registered URL is a maintained entry in `sources.json`: a source page, discovery endpoint, or document. A candidate is only an exact URL observed in a supported discovery response; `present_in_current_response` says it appeared in the most recent successful response. Candidates are not fetched automatically and are not documents until reviewed and registered. A document payload is one retrieved raw byte sequence, identified by SHA-256; `unique document payloads` counts distinct hashes across registered documents and all retained versions. Consequently, the offline fixture correctly has one RSS candidate and three unique payloads from three separately registered seed documents.
++
++Each canonical document record has a stable maintained `id`, `canonical_url`, sorted `aliases` and `all_urls`, nullable `title`, reporting and publication dates, `last_checked`, media type, byte length, current SHA-256, and its ordered payload-version IDs. `origin` distinguishes `seed` from `discovery`, while nullable `discovered_from` names the discovery endpoint when known. Statuses are `new` on the first successful retrieval, `unchanged` for known bytes, `changed` when a known logical document gains a different payload, and `unavailable` on a failed retrieval. Unavailable records retain prior version history.
++
++Logical identity comes from the reviewed document ID, not a filename or hash. Payloads are deduplicated globally by the SHA-256 of their raw bytes and retain every observed URL. Thus two logical records may share one payload without losing either URL, while one logical record may refer to several versions. Identical bytes do not necessarily prove that two publications are the same logical document, and differing bytes may reflect only PDF/HTML packaging changes. Lists and JSON serialization are sorted for deterministic output.
++
++Generate isolated fixture state with `python -m ebolalens sources check --offline`. Generate operational state—which performs network requests—with `python -m ebolalens sources check --live`. Inspect either existing manifest without network access with:
++
++```bash
++python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json
++python -m ebolalens documents list --manifest data/generated/offline_source_manifest.json --json
++```
++
++This tool is for research and control of public epidemiological data, not clinical decisions or independent outbreak management.
+diff --git a/data/sources.json b/data/sources.json
+index 0d61d84..1cbdd7c 100644
+--- a/data/sources.json
++++ b/data/sources.json
+@@ -51,6 +51,7 @@
+       "reporting_date": null,
+       "publication_date": null,
+       "discovery_method": "confirmed_seed_url",
++      "origin": "seed",
+       "offline_fixture": "fixtures/insp-seed-1.pdf",
+       "offline_media_type": "application/pdf"
+     },
+@@ -64,6 +65,7 @@
+       "reporting_date": null,
+       "publication_date": null,
+       "discovery_method": "confirmed_seed_url",
++      "origin": "seed",
+       "offline_fixture": "fixtures/insp-seed-55.pdf",
+       "offline_media_type": "application/pdf"
+     },
+@@ -77,6 +79,7 @@
+       "reporting_date": null,
+       "publication_date": null,
+       "discovery_method": "confirmed_seed_url",
++      "origin": "seed",
+       "offline_fixture": "fixtures/insp-seed-68.pdf",
+       "offline_media_type": "application/pdf"
+     }
+diff --git a/docs/source_investigation.md b/docs/source_investigation.md
+index 1c2c8c8..3524405 100644
+--- a/docs/source_investigation.md
++++ b/docs/source_investigation.md
+@@ -30,3 +30,11 @@ RSS is not guaranteed to contain complete history, and its continued availabilit
+ When an official document is absent from the feed, add a record to `data/sources.json` using the exact official URL. Assign a stable internal ID, retain every observed alias, and enter report number, reporting date, or publication date only when explicitly known; otherwise use `null`. Never construct speculative sequential URLs or use a filename as identity. Run the offline check first, then a live check when network access is safe. Changed bytes become a new SHA-256 version, while identical bytes at another URL extend the payload's observed URL list.
+ 
+ A successful retrieval or candidate observation establishes availability or URL discovery only. It does not validate or interpret epidemiological contents.
++
++## Registry semantics
++
++The manifest deliberately separates logical documents from byte-level payload versions. A reviewed ID is the stable logical identity; its canonical and alternative URLs remain attached to that record. Every distinct raw payload is stored once by SHA-256 and can collect URLs from more than one document. A changed hash adds a version to the logical record rather than replacing history. Records also state whether they were explicit seeds or reviewed discoveries and retain the originating endpoint when it is known.
++
++The offline fixture's one candidate is the sole URL exposed by its synthetic RSS feed. Its three payloads come from the three explicit seed documents in `sources.json`; candidates are neither downloaded nor counted as payloads. These independent counts are therefore expected.
++
++Raw-byte equality is a deduplication signal, not proof of logical-document identity. Conversely, raw-byte differences can result from a technical repackaging that does not change report content. EbolaLens is a research and public-data auditing aid, not a source of clinical decisions or a system for independent outbreak management.
+diff --git a/src/ebolalens/__main__.py b/src/ebolalens/__main__.py
+index 15a6c27..efc1185 100644
+--- a/src/ebolalens/__main__.py
++++ b/src/ebolalens/__main__.py
+@@ -1,6 +1,7 @@
+ """Command-line entry point for EbolaLens."""
+ 
+ import argparse
++import json
+ from datetime import UTC, datetime
+ from pathlib import Path
+ 
+@@ -57,6 +58,51 @@ def _check_sources(config_path: Path, manifest_path: Path, live: bool) -> int:
+     return 0
+ 
+ 
++def _document_rows(manifest: dict) -> list[dict]:
++    """Return canonical document records in stable order."""
++    documents = manifest.get("documents")
++    payloads = manifest.get("payloads")
++    if not isinstance(documents, list) or not isinstance(payloads, list):
++        raise ConfigurationError("manifest must contain documents and payloads lists")
++    if not all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in documents):
++        raise ConfigurationError("manifest contains an invalid document record")
++    return sorted(documents, key=lambda item: item["id"])
++
++
++def _list_documents(manifest_path: Path, as_json: bool) -> int:
++    """Display an existing manifest without performing retrieval."""
++    manifest = load_manifest(manifest_path)
++    if manifest is None:
++        raise ConfigurationError(f"manifest does not exist: {manifest_path}")
++    documents = _document_rows(manifest)
++    if as_json:
++        print(json.dumps(documents, indent=2, sort_keys=True))
++        return 0
++
++    headings = ("ID", "DATE", "TITLE / NAME", "URLS", "STATUS", "SHA-256")
++    rows = []
++    for document in documents:
++        date = document.get("reporting_date") or document.get("publication_date") or "-"
++        title = document.get("title") or document["id"]
++        urls = document.get("all_urls") or [
++            document.get("canonical_url"), *document.get("aliases", [])
++        ]
++        rows.append((
++            document["id"],
++            date,
++            str(title)[:32],
++            str(len({url for url in urls if url})),
++            str(document.get("status") or "-"),
++            str(document.get("sha256") or "-")[:12],
++        ))
++    widths = [max(len(headings[i]), *(len(row[i]) for row in rows)) for i in range(len(headings))]
++    print("  ".join(value.ljust(widths[i]) for i, value in enumerate(headings)))
++    print("  ".join("-" * width for width in widths))
++    for row in rows:
++        print("  ".join(value.ljust(widths[i]) for i, value in enumerate(row)))
++    return 0
++
++
+ def main() -> int:
+     """Run the EbolaLens command-line interface."""
+     parser = argparse.ArgumentParser(prog="ebolalens")
+@@ -79,6 +125,16 @@ def main() -> int:
+     check_parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+     check_parser.add_argument("--manifest", type=Path)
+ 
++    documents_parser = subparsers.add_parser("documents", help="inspect canonical documents")
++    documents_subparsers = documents_parser.add_subparsers(
++        dest="documents_command", required=True
++    )
++    documents_list_parser = documents_subparsers.add_parser(
++        "list", help="list documents from an existing manifest"
++    )
++    documents_list_parser.add_argument("--manifest", type=Path, required=True)
++    documents_list_parser.add_argument("--json", action="store_true", help="emit JSON")
++
+     args = parser.parse_args()
+     try:
+         if args.command == "sources" and args.sources_command == "list":
+@@ -89,6 +145,8 @@ def main() -> int:
+                 _manifest_path(args.manifest, args.live),
+                 args.live,
+             )
++        if args.command == "documents" and args.documents_command == "list":
++            return _list_documents(args.manifest, args.json)
+     except (ConfigurationError, OSError) as exc:
+         parser.error(str(exc))
+     parser.print_help()
+diff --git a/src/ebolalens/sources.py b/src/ebolalens/sources.py
+index b98bf87..65cbe74 100644
+--- a/src/ebolalens/sources.py
++++ b/src/ebolalens/sources.py
+@@ -91,6 +91,8 @@ def load_config(path: Path) -> dict[str, Any]:
+                 required_nullable = {"aliases", "report_number", "reporting_date", "publication_date"}
+                 if not required_nullable <= entry.keys() or not isinstance(entry["aliases"], list):
+                     raise ConfigurationError(f"invalid document metadata: {entry['id']}")
++                if entry.get("origin", "seed") not in {"seed", "discovery"}:
++                    raise ConfigurationError(f"invalid document origin: {entry['id']}")
+     return config
+ 
+ 
+@@ -324,10 +326,18 @@ def check_registry(
+             source_type=entry["source_type"],
+             canonical_url=entry["canonical_url"],
+             aliases=sorted(set(entry["aliases"])),
++            all_urls=sorted({
++                entry["canonical_url"],
++                *entry["aliases"],
++                *(previous.get("all_urls", []) if previous else []),
++            }),
++            title=entry.get("title"),
+             report_number=entry["report_number"],
+             reporting_date=entry["reporting_date"],
+             publication_date=entry["publication_date"],
+             discovery_method=entry["discovery_method"],
++            discovered_from=entry.get("discovered_from"),
++            origin=entry.get("origin", "seed"),
+             last_checked=checked_at,
+             status="error",
+             error=None,
+@@ -342,6 +352,7 @@ def check_registry(
+                 etag=result.etag,
+                 last_modified=result.last_modified,
+             )
++            record["all_urls"] = sorted({*record["all_urls"], result.resolved_url})
+             if result.status == 304 and record["versions"]:
+                 record["status"] = "unchanged"
+             elif 200 <= result.status < 300:
+@@ -357,7 +368,9 @@ def check_registry(
+                 if payload:
+                     payload["observed_urls"] = sorted(set(payload["observed_urls"]) | set(observed))
+                     payload["last_checked"] = checked_at
+-                    record["status"] = "unchanged" if version_id in record["versions"] else "alias"
++                    record["status"] = "unchanged" if version_id in record["versions"] else (
++                        "changed" if record["versions"] else "new"
++                    )
+                 else:
+                     payload = {
+                         "version_id": version_id,
+@@ -373,18 +386,22 @@ def check_registry(
+                         "last_modified": result.last_modified,
+                     }
+                     manifest["payloads"].append(payload)
+-                    record["status"] = "new_version"
++                    record["status"] = "changed" if record["versions"] else "new"
+                 if version_id not in record["versions"]:
+                     record["versions"].append(version_id)
+                 record["byte_length"] = len(result.body)
+                 record["sha256"] = digest
+             else:
+-                record["status"] = "http_error"
++                record["status"] = "unavailable"
+                 record["error"] = f"HTTP {result.status}"
+         except (TransportError, ValueError) as exc:
++            record["status"] = "unavailable"
+             record["error"] = str(exc)
+         manifest["documents"].append(record)
+ 
++    manifest["source_pages"].sort(key=lambda item: item["id"])
++    manifest["discovery_endpoints"].sort(key=lambda item: item["id"])
++    manifest["documents"].sort(key=lambda item: item["id"])
+     manifest["payloads"].sort(key=lambda item: item["version_id"])
+     manifest["candidates"].sort(key=lambda item: item["url"])
+     return manifest
+diff --git a/tests/test_sources.py b/tests/test_sources.py
+index 098e3e1..597e920 100644
+--- a/tests/test_sources.py
++++ b/tests/test_sources.py
+@@ -235,7 +235,7 @@ def test_changed_bytes_create_new_version() -> None:
+ 
+     assert len(second["payloads"]) == 2
+     assert len(second["documents"][0]["versions"]) == 2
+-    assert second["documents"][0]["status"] == "new_version"
++    assert second["documents"][0]["status"] == "changed"
+ 
+ 
+ def test_identical_bytes_at_second_url_are_alias() -> None:
+@@ -251,7 +251,9 @@ def test_identical_bytes_at_second_url_are_alias() -> None:
+ 
+     assert len(manifest["payloads"]) == 1
+     assert manifest["payloads"][0]["observed_urls"] == [first_url, second_url]
+-    assert manifest["documents"][1]["status"] == "alias"
++    assert manifest["documents"][1]["status"] == "new"
++    assert manifest["documents"][0]["all_urls"] == [first_url]
++    assert manifest["documents"][1]["all_urls"] == [second_url]
+ 
+ 
+ def test_transport_failure_preserves_prior_state() -> None:
+@@ -265,7 +267,7 @@ def test_transport_failure_preserves_prior_state() -> None:
+     second = check_registry(config, first, failing_fetch, "2026-01-02T00:00:00Z")
+     assert second["payloads"] == first["payloads"]
+     assert second["documents"][0]["versions"] == first["documents"][0]["versions"]
+-    assert second["documents"][0]["status"] == "error"
++    assert second["documents"][0]["status"] == "unavailable"
+     assert second["documents"][0]["error"] == "timed out"
+ 
+ 
+@@ -311,6 +313,100 @@ def test_offline_cli(tmp_path: Path) -> None:
+     assert len(json.loads(manifest.read_text(encoding="utf-8"))["payloads"]) == 3
+ 
+ 
++def test_document_origin_and_discovery_provenance() -> None:
++    seed_url = "https://example.test/seed.pdf"
++    discovered_url = "https://example.test/discovered.pdf"
++    config = config_for(("seed", seed_url), ("discovered", discovered_url))
++    config["documents"][0]["origin"] = "seed"
++    config["documents"][1].update(
++        origin="discovery", discovered_from="feed", discovery_method="rss"
++    )
++    manifest = check_registry(
++        config,
++        None,
++        fixed_fetch({seed_url: b"seed", discovered_url: b"discovered"}),
++        "2026-01-01T00:00:00Z",
++    )
++
++    assert manifest["documents"][0]["origin"] == "discovery"
++    assert manifest["documents"][0]["discovered_from"] == "feed"
++    assert manifest["documents"][1]["origin"] == "seed"
++    assert manifest["documents"][1]["discovered_from"] is None
++
++
++def test_manifest_order_and_serialization_are_deterministic(tmp_path: Path) -> None:
++    first_url = "https://example.test/z.pdf"
++    second_url = "https://example.test/a.pdf"
++    config = config_for(("z-document", first_url), ("a-document", second_url))
++    fetch = fixed_fetch({first_url: b"z", second_url: b"a"})
++    first = check_registry(config, None, fetch, "2026-01-01T00:00:00Z")
++    config["documents"].reverse()
++    second = check_registry(config, None, fetch, "2026-01-01T00:00:00Z")
++    first_path = tmp_path / "first.json"
++    second_path = tmp_path / "second.json"
++    write_manifest_atomic(first_path, first)
++    write_manifest_atomic(second_path, second)
++
++    assert [item["id"] for item in first["documents"]] == ["a-document", "z-document"]
++    assert first_path.read_bytes() == second_path.read_bytes()
++
++
++def test_offline_fixture_has_one_candidate_and_three_seed_payloads(tmp_path: Path) -> None:
++    config_path = Path("data/sources.json")
++    config = load_config(config_path)
++    from ebolalens.sources import OFFLINE_TIMESTAMP, offline_transport
++
++    manifest = check_registry(
++        config, None, offline_transport(config, config_path), OFFLINE_TIMESTAMP
++    )
++
++    assert len(manifest["candidates"]) == 1
++    assert len(manifest["payloads"]) == 3
++    assert {item["origin"] for item in manifest["documents"]} == {"seed"}
++    assert all(item["present_in_current_response"] for item in manifest["candidates"])
++
++
++def test_documents_list_table_and_json_are_offline(tmp_path: Path) -> None:
++    manifest_path = tmp_path / "manifest.json"
++    config = config_for(("document-1", "https://example.test/report.pdf"))
++    manifest = check_registry(
++        config,
++        None,
++        fixed_fetch({"https://example.test/report.pdf": b"report"}),
++        "2026-01-01T00:00:00Z",
++    )
++    write_manifest_atomic(manifest_path, manifest)
++
++    table = subprocess.run(
++        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path)],
++        check=False, capture_output=True, text=True,
++    )
++    machine = subprocess.run(
++        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path), "--json"],
++        check=False, capture_output=True, text=True,
++    )
++
++    assert table.returncode == 0
++    assert "document-1" in table.stdout
++    assert json.loads(machine.stdout)[0]["id"] == "document-1"
++
++
++@pytest.mark.parametrize("contents", [None, "not json"])
++def test_documents_list_rejects_missing_or_broken_manifest(
++    tmp_path: Path, contents: str | None
++) -> None:
++    manifest_path = tmp_path / "manifest.json"
++    if contents is not None:
++        manifest_path.write_text(contents, encoding="utf-8")
++    result = subprocess.run(
++        [sys.executable, "-m", "ebolalens", "documents", "list", "--manifest", str(manifest_path)],
++        check=False, capture_output=True, text=True,
++    )
++
++    assert result.returncode != 0
++    assert "manifest" in result.stderr.lower()
++
++
+ def test_cli_uses_isolated_default_manifests_without_network(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:

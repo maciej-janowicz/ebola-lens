@@ -30,3 +30,11 @@ RSS is not guaranteed to contain complete history, and its continued availabilit
 When an official document is absent from the feed, add a record to `data/sources.json` using the exact official URL. Assign a stable internal ID, retain every observed alias, and enter report number, reporting date, or publication date only when explicitly known; otherwise use `null`. Never construct speculative sequential URLs or use a filename as identity. Run the offline check first, then a live check when network access is safe. Changed bytes become a new SHA-256 version, while identical bytes at another URL extend the payload's observed URL list.
 
 A successful retrieval or candidate observation establishes availability or URL discovery only. It does not validate or interpret epidemiological contents.
+
+## Registry semantics
+
+The manifest deliberately separates logical documents from byte-level payload versions. A reviewed ID is the stable logical identity; its canonical and alternative URLs remain attached to that record. Every distinct raw payload is stored once by SHA-256 and can collect URLs from more than one document. A changed hash adds a version to the logical record rather than replacing history. Records also state whether they were explicit seeds or reviewed discoveries and retain the originating endpoint when it is known.
+
+The offline fixture's one candidate is the sole URL exposed by its synthetic RSS feed. Its three payloads come from the three explicit seed documents in `sources.json`; candidates are neither downloaded nor counted as payloads. These independent counts are therefore expected.
+
+Raw-byte equality is a deduplication signal, not proof of logical-document identity. Conversely, raw-byte differences can result from a technical repackaging that does not change report content. EbolaLens is a research and public-data auditing aid, not a source of clinical decisions or a system for independent outbreak management.

@@ -11,6 +11,11 @@ requires-python = ">=3.11"
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+exploration = [
+    "pdfplumber>=0.10.0",
+    "pypdf>=3.0.0",
+    "pymupdf>=1.23.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
